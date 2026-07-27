@@ -1,0 +1,57 @@
+{
+  "volume_root": "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset",
+  "output_root": "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging",
+  "dictionary_filename_regex": "(?i)follow[-_ ]?up2.*data.*dictionar.*\\.xlsx$",
+  "tracking_data_regex": "(?i)(tracking|trf2).*(\\.csv|\\.csv\\.gz|\\.parquet|\\.delta)$",
+  "comprehensive_data_regex": "(?i)(comprehensive|cof2).*(\\.csv|\\.csv\\.gz|\\.parquet|\\.delta)$",
+  "fundus_archive_regex": "(?i)(fundus|retina|retinal|eye).*(\\.zip|\\.7z)$",
+  "fundus_image_regex": "(?i)\\.(jpg|jpeg|png|tif|tiff|bmp|dcm)$",
+  "participant_id_regex": "(?i)(?:^|[/_-])(?P<participant_id>[A-Z0-9]{6,})(?:[/_.-]|$)",
+  "eye_regex": "(?i)(?:^|[_-])(?P<eye>OD|OS|OU|RIGHT|LEFT|R|L)(?:[_\\-.]|$)",
+  "participant_id_candidates": [
+    "entity_id",
+    "participant_id",
+    "PARTICIPANT_ID",
+    "CLSA_ID",
+    "ID",
+    "id"
+  ],
+  "fundus_secret": {
+    "scope": "clsa",
+    "key": "fundus-archive-password"
+  },
+  "visual_acuity_scale_confirmed_logmar": false,
+  "require_both_eyes_for_better_eye": true,
+  "probe_image_dimensions": false,
+  "compute_image_sha256": false,
+  "genetics": {
+    "participant_link_column": "ADM_GWAS_COM",
+    "expected_direct_genotype_prefix": "clsa_gen_v3",
+    "expected_imputed_prefix": "clsa_imp_",
+    "expected_chromosomes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23
+    ]
+  }
+}

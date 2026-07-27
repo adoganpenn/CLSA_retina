@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local environments and credentials
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.databrickscfg
+
+# Notebook and test caches
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+
+# Restricted CLSA data and generated analysis outputs
+data/
+datasets/
+outputs/
+artifacts/
+models/
+checkpoints/
+*.parquet
+*.feather
+*.joblib
+*.pkl
+*.pth
+*.pt
+*.ckpt
+
+# Logs and temporary files
+*.log
+*.tmp
