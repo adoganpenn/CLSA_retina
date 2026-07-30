@@ -203,13 +203,9 @@ display(release_catalog_df.orderBy("role", "visit", "name"))
 # MAGIC ## 1. Volume file inventory and genetics readiness
 
 # COMMAND ----------
-inventory = (
-    build_file_inventory(spark, volume_root)
-    .filter(
-        ~F.col("path").startswith(output_root)
-        & ~F.col("path").startswith(f"dbfs:{output_root}")
-    )
-    .cache()
+inventory = build_file_inventory(spark, volume_root).filter(
+    ~F.col("path").startswith(output_root)
+    & ~F.col("path").startswith(f"dbfs:{output_root}")
 )
 write_delta(inventory, f"{output_root}/file_inventory")
 
