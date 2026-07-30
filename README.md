@@ -8,12 +8,26 @@ Start with:
 
 - [`README_MASTER.md`](README_MASTER.md) for the complete CLSA data,
   questionnaire, imaging, phenotype, and genetics workflow.
-- [`RUN_RETFOUND.md`](RUN_RETFOUND.md) for the fundus quality-control,
-  RETFound, retinal-age, and explainability run sequence.
 - [`notebooks/01_build_clsa_dataset.py`](notebooks/01_build_clsa_dataset.py)
-  to assemble the analysis manifest in Databricks.
+  to inventory the exact release ZIPs, audit genetics readiness, generate the
+  governed `DATASET_README.md`, and optionally assemble analysis tables.
+- [`src/clsa_dataset_inventory.py`](src/clsa_dataset_inventory.py) for the
+  metadata-only ZIP, CSV-schema, dictionary, and README-generation functions.
+- [`notebooks/smoketest.ipynb`](notebooks/smoketest.ipynb) for the validated
+  eight-image crop, quality-control, RETFound, and vector smoke test.
+- [`RUN_RETFOUND.md`](RUN_RETFOUND.md) for the full fundus quality-control,
+  RETFound, retinal-age, and explainability run sequence.
 - [`notebooks/02_run_fundus_retfound.py`](notebooks/02_run_fundus_retfound.py)
-  to run the fundus pipeline in Databricks.
+  to run the complete fundus pipeline in Databricks.
+
+The first phase of `01_build_clsa_dataset.py` is metadata-only: it reads ZIP
+central directories and questionnaire CSV headers without extracting images or
+participant rows. It writes a comprehensive generated README to:
+
+```text
+/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/
+clsa_retinal_aging/DATASET_README.md
+```
 
 ## Data governance
 
