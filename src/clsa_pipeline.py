@@ -313,6 +313,7 @@ def load_dictionary_sheets(
 ) -> tuple[Any, Any]:
     """Load the Variables and Categories sheets into two Spark DataFrames."""
     import openpyxl
+    from pyspark.sql.types import StringType, StructField, StructType
 
     workbook = openpyxl.load_workbook(
         workbook_path, read_only=True, data_only=True
@@ -335,8 +336,23 @@ def load_dictionary_sheets(
             if any(value is not None for value in row)
         ]
 
-    variables = spark.createDataFrame(sheet_records("Variables"))
-    categories = spark.createDataFrame(sheet_records("Categories"))
+    def sheet_data_frame(sheet_name: str) -> Any:
+        records = sheet_records(sheet_name)
+        if not records:
+            raise ValueError(f"Dictionary sheet is empty: {sheet_name}")
+        schema = StructType(
+            [
+                StructField(header, StringType(), nullable=True)
+                for header in records[0]
+            ]
+        )
+        return spark.createDataFrame(records, schema=schema)
+
+    try:
+        variables = sheet_data_frame("Variables")
+        categories = sheet_data_frame("Categories")
+    finally:
+        workbook.close()
     return variables, categories
 
 
