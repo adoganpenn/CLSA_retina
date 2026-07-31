@@ -102,6 +102,50 @@ n_explain = int(dbutils.widgets.get("n_explain"))
 explainability_method = dbutils.widgets.get("explainability_method")
 expected_embedding_dim = 1024
 
+
+def databricks_path_exists(path: str) -> bool:
+    try:
+        dbutils.fs.ls(path)
+        return True
+    except Exception:
+        return False
+
+
+if source_format == "delta" and not databricks_path_exists(source_path):
+    derived_root = (
+        "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+        "clsa_retinal_aging"
+    )
+    smoke_candidates = [
+        f"{derived_root}/fundus_smoke_manifest",
+        (
+            f"{derived_root}/fundus_retfound_smoke/00_input/"
+            "fundus_smoke_manifest"
+        ),
+    ]
+    fallback = next(
+        (
+            candidate
+            for candidate in smoke_candidates
+            if databricks_path_exists(candidate)
+        ),
+        None,
+    )
+    if fallback:
+        print(
+            "Configured full image manifest is unavailable; using smoke "
+            f"manifest: {fallback}"
+        )
+        source_path = fallback
+        dbutils.widgets.set("source_path", fallback)
+    else:
+        raise FileNotFoundError(
+            "No fundus source manifest exists. Either set source_path to a "
+            "valid smoke manifest or run notebook 01 with "
+            "extract_fundus_archives=true to create fundus_image_manifest. "
+            f"Configured path: {source_path}"
+        )
+
 module_path = Path(repo_root) / "src" / "fundus_retfound_pipeline.py"
 if not module_path.exists():
     raise FileNotFoundError(f"Pipeline module was not found: {module_path}")
