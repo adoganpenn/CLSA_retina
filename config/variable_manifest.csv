@@ -34,6 +34,6 @@ social_other,Social activity - other recreation,SPA_OTACT_TRF2,SPA_OTACT_COF2,SP
 adl_class,OARS ADL classification,ADL_DCLS_TRF2,ADL_DCLS_COF2,ADL_DCLS_COM,categorical,covariate,ready,"1 no impairment through 5 total impairment."
 self_rated_healthy_aging,Self-rated healthy aging,GEN_OWNAG_TRF2,GEN_OWNAG_COF2,GEN_OWNAG_COM,categorical,outcome,ready,"1 excellent through 5 poor."
 analytic_weight,Survey analytic weight,WGHTS_ANALYTIC_TRF2,WGHTS_ANALYTIC_COF2,WGHTS_ANALYTIC_COM,numeric,design,ready,"Use the cohort-specific weight."
-sampling_strata,Survey sampling strata,WGHTS_GEOSTRATA_TRF2,WGHTS_GEOSTRATA_COF2,WGHTS_GEOSTRAT_COM,categorical,design,ready,"Follow-up 2 uses GEOSTRATA (plural), correcting the SAP name."
+sampling_strata,Survey sampling strata,WGHTS_GEOSTRATA_TRF2,WGHTS_GEOSTRATA_COF2,GEOSTRATA_COM|WGHTS_GEOSTRAT_COM,categorical,design,ready,"The observed baseline header is GEOSTRATA_COM; Follow-up 2 uses WGHTS_GEOSTRATA (plural)."
 frailty,Frailty,,,,numeric,covariate,definition_required,"The SAP row is blank; select and document a validated CLSA frailty definition before deriving."
 epigenetic_age,Epigenetic age,,,,numeric,outcome,external_data_required,"Not present in the supplied Follow-up 2 dictionary or GWAS release; requires methylation data and a specified clock."

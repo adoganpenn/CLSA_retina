@@ -19,6 +19,9 @@ Start with:
   RETFound, retinal-age, and explainability run sequence.
 - [`notebooks/02_run_fundus_retfound.py`](notebooks/02_run_fundus_retfound.py)
   to run the complete fundus pipeline in Databricks.
+- [`notebooks/03_build_sap_analysis_dataset.py`](notebooks/03_build_sap_analysis_dataset.py)
+  to extract the exact BL/F1 questionnaire releases, derive the SAP variables,
+  and link every fundus image to the age released for its matching visit.
 
 The first phase of `01_build_clsa_dataset.py` is metadata-only: it reads ZIP
 central directories and questionnaire CSV headers without extracting images or
