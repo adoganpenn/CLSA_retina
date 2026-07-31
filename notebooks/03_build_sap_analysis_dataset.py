@@ -738,12 +738,21 @@ if not Path(image_manifest_path).exists():
 images_raw = spark.read.format("delta").load(image_manifest_path)
 require_columns(
     images_raw,
-    ["participant_id_parsed", "visit", "image_path"],
+    ["visit", "image_path"],
     "Fundus image manifest",
 )
+if "participant_id_parsed" in images_raw.columns:
+    image_participant_column = "participant_id_parsed"
+elif "participant_id" in images_raw.columns:
+    image_participant_column = "participant_id"
+else:
+    raise ValueError(
+        "Fundus image manifest must contain participant_id_parsed or "
+        "participant_id."
+    )
 
 image_selections = [
-    F.col("participant_id_parsed").cast("string").alias("participant_id"),
+    F.col(image_participant_column).cast("string").alias("participant_id"),
     F.when(F.upper(F.col("visit")).isin("F1", "FUP1"), F.lit("F1"))
     .when(F.upper(F.col("visit")) == "BL", F.lit("BL"))
     .otherwise(F.lit(None).cast("string"))
