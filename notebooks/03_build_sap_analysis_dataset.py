@@ -222,7 +222,10 @@ def read_release_csv(path: str):
         .option("mode", "FAILFAST")
         .option("quote", '"')
         .option("escape", '"')
-        .option("multiLine", "false")
+        # CLSA questionnaire exports can contain quoted line breaks. Without
+        # multiline parsing, continuation lines become malformed extra rows and
+        # can appear as duplicate/null participant records.
+        .option("multiLine", "true")
         .option("maxColumns", "10000")
         .csv(path)
     )
@@ -414,7 +417,7 @@ def project_visit(df, visit: str, source_map: dict[str, str]):
     require_columns(df, required, f"{visit} questionnaire")
 
     selections = [
-        F.col("entity_id").cast("string").alias("participant_id"),
+        F.trim(F.col("entity_id").cast("string")).alias("participant_id"),
         F.lit(visit).alias("visit"),
     ]
     for standard_name in STANDARD_COLUMNS:
@@ -478,11 +481,70 @@ questionnaire_visit_raw = questionnaire_visit_raw.withColumn(
         F.lit(None).cast("string"),
     ).otherwise(F.col("smoking_status")),
 )
-assert_unique(
-    questionnaire_visit_raw,
-    ["participant_id", "visit"],
-    "Questionnaire participant-visit table",
+
+# The fundus release layout uses seven-digit participant IDs. Exclude malformed
+# CSV continuation rows and remove only exact duplicate projected records.
+questionnaire_rows_read = questionnaire_visit_raw.count()
+invalid_questionnaire_ids = questionnaire_visit_raw.filter(
+    ~F.coalesce(F.col("participant_id"), F.lit("")).rlike(r"^\d{7}$")
+).count()
+questionnaire_visit_valid = questionnaire_visit_raw.filter(
+    F.coalesce(F.col("participant_id"), F.lit("")).rlike(r"^\d{7}$")
 )
+questionnaire_valid_rows = questionnaire_visit_valid.count()
+questionnaire_visit_raw = questionnaire_visit_valid.dropDuplicates()
+questionnaire_distinct_rows = questionnaire_visit_raw.count()
+exact_duplicate_rows_removed = (
+    questionnaire_valid_rows - questionnaire_distinct_rows
+)
+
+conflicting_duplicate_keys = (
+    questionnaire_visit_raw.groupBy("participant_id", "visit")
+    .count()
+    .filter(F.col("count") > 1)
+)
+conflicting_duplicate_key_count = conflicting_duplicate_keys.count()
+
+questionnaire_qc_rows = [
+    {"metric": "rows_read", "value": questionnaire_rows_read},
+    {"metric": "invalid_or_malformed_ids", "value": invalid_questionnaire_ids},
+    {"metric": "valid_id_rows", "value": questionnaire_valid_rows},
+    {
+        "metric": "exact_duplicate_rows_removed",
+        "value": exact_duplicate_rows_removed,
+    },
+    {
+        "metric": "conflicting_duplicate_participant_visits",
+        "value": conflicting_duplicate_key_count,
+    },
+]
+questionnaire_input_qc = spark.createDataFrame(
+    questionnaire_qc_rows,
+    schema="metric string, value long",
+)
+write_delta(
+    questionnaire_input_qc,
+    f"{output_root}/sap_questionnaire_input_qc",
+)
+display(questionnaire_input_qc)
+
+if conflicting_duplicate_key_count:
+    conflicting_duplicate_records = questionnaire_visit_raw.join(
+        conflicting_duplicate_keys.select("participant_id", "visit"),
+        ["participant_id", "visit"],
+        "inner",
+    )
+    conflict_path = f"{output_root}/sap_questionnaire_duplicate_conflicts"
+    write_delta(
+        conflicting_duplicate_records,
+        conflict_path,
+        partition_by=("visit",),
+    )
+    raise ValueError(
+        f"Found {conflicting_duplicate_key_count} participant-visits with "
+        "genuinely different records after multiline-safe parsing and exact "
+        f"deduplication. Review the governed audit: {conflict_path}"
+    )
 
 # COMMAND ----------
 # MAGIC %md
@@ -495,10 +557,12 @@ require_columns(
     "Participant-status release",
 )
 status_visit = status_raw.select(
-    F.col("entity_id").cast("string").alias("participant_id"),
+    F.trim(F.col("entity_id").cast("string")).alias("participant_id"),
     F.col("clsa_baseline_date").cast("string").alias("status_bl_date_raw"),
     F.col("clsa_fup1_date").cast("string").alias("status_f1_date_raw"),
-)
+).filter(
+    F.coalesce(F.col("participant_id"), F.lit("")).rlike(r"^\d{7}$")
+).dropDuplicates()
 assert_unique(status_visit, ["participant_id"], "Participant-status table")
 
 questionnaire_visit_raw = questionnaire_visit_raw.join(
@@ -938,10 +1002,13 @@ display(availability.orderBy("standard_name", "visit"))
 # MAGIC ## Durable outputs
 # MAGIC
 # MAGIC - `sap_questionnaire_extraction_log`: exact extracted CSV provenance
+# MAGIC - `sap_questionnaire_input_qc`: malformed-ID and duplicate-row counts
 # MAGIC - `sap_questionnaire_visit`: one row per participant and visit
 # MAGIC - `sap_fundus_image_analysis`: one row per image with visit-matched age
 # MAGIC - `sap_age_linkage_qc`: BL/F1 released-age versus date-proxy checks
 # MAGIC - `sap_variable_availability`: source-column and unresolved-item audit
+# MAGIC - `sap_questionnaire_duplicate_conflicts`: written only when genuinely
+# MAGIC   different records share a participant and visit
 # MAGIC
 # MAGIC Participant-level outputs remain in the governed Unity Catalog Volume
 # MAGIC and must not be copied into Git.

@@ -50,6 +50,12 @@ class SapNotebookContractTests(unittest.TestCase):
         self.assertIn("exact_fundus_capture_timestamp_available", self.source)
         self.assertNotIn(".cache()", self.source)
 
+    def test_questionnaire_csv_and_duplicates_are_handled_safely(self) -> None:
+        self.assertIn('.option("multiLine", "true")', self.source)
+        self.assertIn("exact_duplicate_rows_removed", self.source)
+        self.assertIn("sap_questionnaire_duplicate_conflicts", self.source)
+        self.assertIn(r'rlike(r"^\d{7}$")', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
