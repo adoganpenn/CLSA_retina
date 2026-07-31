@@ -13,6 +13,7 @@
 # MAGIC disabled for the first documentation run.
 
 # COMMAND ----------
+
 import json
 from pathlib import Path
 import sys
@@ -20,6 +21,7 @@ import sys
 from pyspark.sql import functions as F
 
 # COMMAND ----------
+
 dbutils.widgets.text(
     "repo_root",
     "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
@@ -69,6 +71,7 @@ dbutils.widgets.text("crosswalk_participant_id_column", "participant_id")
 dbutils.widgets.text("crosswalk_gwas_id_column", "ADM_GWAS_COM")
 
 # COMMAND ----------
+
 repo_root = dbutils.widgets.get("repo_root").rstrip("/")
 volume_root = dbutils.widgets.get("volume_root").rstrip("/")
 output_root = dbutils.widgets.get("output_root").rstrip("/")
@@ -123,6 +126,7 @@ variable_manifest = load_variable_manifest(
 )
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Release catalog
 # MAGIC
@@ -131,6 +135,7 @@ variable_manifest = load_variable_manifest(
 # MAGIC inspected for member names and CSV headers only.
 
 # COMMAND ----------
+
 release_catalog = [
     {
         "name": "fundus_baseline",
@@ -199,10 +204,12 @@ write_delta(release_catalog_df, f"{output_root}/release_catalog")
 display(release_catalog_df.orderBy("role", "visit", "name"))
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 1. Volume file inventory and genetics readiness
 
 # COMMAND ----------
+
 inventory = build_file_inventory(spark, volume_root).filter(
     ~F.col("path").startswith(output_root)
     & ~F.col("path").startswith(f"dbfs:{output_root}")
@@ -225,6 +232,7 @@ genetics_readiness = validate_genetics_inventory(
 print(json.dumps(genetics_readiness, indent=2))
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 2. Metadata-only ZIP inspection
 # MAGIC
@@ -232,6 +240,7 @@ print(json.dumps(genetics_readiness, indent=2))
 # MAGIC password and does not extract images or participant datasets.
 
 # COMMAND ----------
+
 zip_member_rows = []
 zip_summary_rows = []
 csv_schema_rows = []
@@ -292,10 +301,12 @@ else:
     )
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 3. Dictionary metadata
 
 # COMMAND ----------
+
 dictionary_profile = profile_dictionary_workbook(dictionary_path)
 print(json.dumps(dictionary_profile, indent=2))
 
@@ -316,6 +327,7 @@ write_delta(
 )
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 4. Genetics metadata tables
 # MAGIC
@@ -323,6 +335,7 @@ write_delta(
 # MAGIC BED/BIM/FAM, and `imputed_ready` requires every BGEN/BGI chromosome pair.
 
 # COMMAND ----------
+
 sample_qc_candidates = [
     row["path"]
     for row in inventory.filter(
@@ -399,10 +412,12 @@ elif len(hla_candidates) > 1:
     raise ValueError("Multiple clsa_hla_v3.csv files were found.")
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 5. Generate the comprehensive dataset README
 
 # COMMAND ----------
+
 inventory_rows = [
     row.asDict(recursive=True)
     for row in inventory.orderBy("relative_path").collect()
@@ -449,6 +464,7 @@ else:
     print("Dataset README generation disabled.")
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 6. Optional full fundus extraction
 # MAGIC
@@ -458,6 +474,7 @@ else:
 # MAGIC from Python memory when extraction finishes.
 
 # COMMAND ----------
+
 image_manifest = None
 if extract_archives:
     archive_password = dbutils.widgets.get("archive_password")
@@ -545,6 +562,7 @@ else:
     )
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 7. Optional questionnaire harmonization
 # MAGIC
@@ -554,6 +572,7 @@ else:
 # MAGIC widgets before enabling this phase.
 
 # COMMAND ----------
+
 questionnaire = None
 mapping_audits = []
 if build_questionnaire:
@@ -631,6 +650,7 @@ if build_questionnaire:
     )
 
 # COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## 8. Optional authorized linkage
 # MAGIC
@@ -638,6 +658,7 @@ if build_questionnaire:
 # MAGIC `ADM_GWAS_COM`. Never infer linkage from row order or approximate IDs.
 
 # COMMAND ----------
+
 if questionnaire is not None:
     master = questionnaire
 
