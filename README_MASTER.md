@@ -240,11 +240,23 @@ The inventory is metadata-only; it does not load image or genotype contents.
 After confirming the archive candidates:
 
 1. Set `extract_fundus_archives=true`.
-2. Confirm the secret scope/key.
-3. Run the extraction phase.
-4. Inspect `fundus_extraction_manifest`.
-5. Inspect the count of unparsed participant IDs in
+2. Enter the temporary archive password in the `archive_password` widget.
+3. Keep `extraction_batch_size=500` and
+   `max_images_per_release_per_run=5000` for the first full run.
+4. Run the extraction phase repeatedly. Each run resumes from the last
+   committed ZIP member and processes at most 5,000 images per release. Wait
+   until both releases print `complete`. Set the per-release limit to `0` only
+   when an unbounded run is appropriate for the attached cluster.
+5. Inspect `fundus_extraction_manifest`; it is upserted after every batch, so a
+   terminated cluster loses at most the current uncommitted batch.
+6. Inspect the count of unparsed participant IDs in
    `fundus_image_manifest`.
+
+Progress is printed every 100 images by default, including the overall ZIP
+position, current-run count, extraction rate, elapsed time, failures, and files
+already present. Set `restart_fundus_extraction=true` for one run only when a
+release must be rechecked from image zero; existing correctly sized files are
+not rewritten.
 
 The built-in extractor supports standard ZipCrypto ZIP archives and blocks
 path-traversal members. If the archive uses WinZip AES or is a 7z archive, use a
