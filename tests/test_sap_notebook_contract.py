@@ -48,6 +48,16 @@ class SapNotebookContractTests(unittest.TestCase):
             self.source,
         )
         self.assertIn("exact_fundus_capture_timestamp_available", self.source)
+        self.assertIn("sap_fundus_image_linkage_audit", self.source)
+        self.assertIn("sap_fundus_image_exclusions", self.source)
+        self.assertIn(
+            'F.col("image_age_link_status") == "visit_age_matched"',
+            self.source,
+        )
+        self.assertNotIn(
+            "Some fundus images have an unparsed participant ID",
+            self.source,
+        )
         self.assertNotIn(".cache()", self.source)
 
     def test_questionnaire_csv_and_duplicates_are_handled_safely(self) -> None:

@@ -156,6 +156,7 @@ source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa
 age_source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/sap_fundus_image_analysis
 attach_visit_matched_age=true
 require_nonzero_age_coverage=true
+exclude_images_without_age=true
 output_root=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_retfound
 run_all_images=true
 pipeline_batch_size=500
@@ -169,6 +170,9 @@ run_explainability=false
 `pipeline_batch_size=500` is the durable checkpoint interval. `batch_size=8`
 is the GPU minibatch inside each checkpoint and can be tuned independently.
 BL and F1 are both processed in full; their image counts are not balanced.
+Only images with a visit-matched released age are retained when
+`exclude_images_without_age=true`; notebook 03 writes excluded rows and reasons
+to `sap_fundus_image_exclusions`.
 After every 500-image quality or embedding batch, a Parquet result is saved
 under the corresponding `batches/` directory. If the cluster terminates,
 rerun with the same output path and `resume_batches=true`; validated completed

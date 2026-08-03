@@ -63,6 +63,9 @@ dbutils.widgets.dropdown(
 dbutils.widgets.dropdown(
     "require_nonzero_age_coverage", "true", ["true", "false"]
 )
+dbutils.widgets.dropdown(
+    "exclude_images_without_age", "true", ["true", "false"]
+)
 dbutils.widgets.text(
     "output_root",
     "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
@@ -111,6 +114,9 @@ attach_visit_matched_age = (
 )
 require_nonzero_age_coverage = (
     dbutils.widgets.get("require_nonzero_age_coverage") == "true"
+)
+exclude_images_without_age = (
+    dbutils.widgets.get("exclude_images_without_age") == "true"
 )
 output_root = Path(dbutils.widgets.get("output_root").strip())
 retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
@@ -516,14 +522,6 @@ manifest_spark = manifest_spark.withColumn(
 manifest_spark = manifest_spark.filter(
     F.col("image_path").isNotNull() & F.col("participant_id").isNotNull()
 ).dropDuplicates(["image_path"])
-manifest_spark = manifest_spark.orderBy(
-    "participant_id",
-    "eye",
-    "image_path",
-)
-if max_images > 0:
-    manifest_spark = manifest_spark.limit(max_images)
-
 display(
     manifest_spark.groupBy(
         "visit",
@@ -545,11 +543,28 @@ if (
         "sap_fundus_image_analysis, confirm age_source_path, and rerun 02. "
         "BL requires AGE_NMBR_COM; F1 requires AGE_NMBR_COF1."
     )
+if exclude_images_without_age:
+    excluded_without_age = manifest_spark.filter(
+        F.col("age").isNull()
+    ).count()
+    print(
+        "Images excluded because visit-matched age is unavailable:",
+        excluded_without_age,
+    )
+    manifest_spark = manifest_spark.filter(F.col("age").isNotNull())
+
+manifest_spark = manifest_spark.orderBy(
+    "participant_id",
+    "eye",
+    "image_path",
+)
+if max_images > 0:
+    manifest_spark = manifest_spark.limit(max_images)
 
 if run_all_images:
     print(
-        "run_all_images=true: processing every distinct image path; BL and F1 "
-        "counts are intentionally allowed to differ."
+        "run_all_images=true: processing every eligible distinct image path; "
+        "BL and F1 counts are intentionally allowed to differ."
     )
     if "visit" not in manifest_spark.columns:
         raise ValueError(

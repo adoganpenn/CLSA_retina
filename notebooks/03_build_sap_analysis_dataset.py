@@ -840,13 +840,12 @@ images = images_raw.select(*image_selections)
 invalid_images = images.filter(
     F.col("participant_id").isNull() | F.col("visit").isNull()
 )
-if invalid_images.limit(1).count():
-    raise ValueError(
-        "Some fundus images have an unparsed participant ID or unsupported visit."
-    )
+valid_images = images.filter(
+    F.col("participant_id").isNotNull() & F.col("visit").isNotNull()
+)
 
-sap_fundus_images = (
-    images.join(
+sap_fundus_image_linkage = (
+    valid_images.join(
         questionnaire_visit,
         ["participant_id", "visit"],
         "left",
@@ -862,6 +861,40 @@ sap_fundus_images = (
     )
 )
 
+invalid_image_exclusions = invalid_images.withColumn(
+    "image_age_link_status",
+    F.when(
+        F.col("participant_id").isNull(),
+        F.lit("participant_id_unparsed"),
+    ).otherwise(F.lit("unsupported_image_visit")),
+)
+age_link_exclusions = sap_fundus_image_linkage.filter(
+    F.col("image_age_link_status") != "visit_age_matched"
+)
+sap_fundus_image_exclusions = invalid_image_exclusions.unionByName(
+    age_link_exclusions,
+    allowMissingColumns=True,
+)
+sap_fundus_images = sap_fundus_image_linkage.filter(
+    F.col("image_age_link_status") == "visit_age_matched"
+)
+
+if not sap_fundus_images.limit(1).count():
+    raise ValueError(
+        "No fundus images have a visit-matched age after exclusions. Review "
+        "sap_fundus_image_exclusions and questionnaire linkage."
+    )
+
+write_delta(
+    sap_fundus_image_linkage,
+    f"{output_root}/sap_fundus_image_linkage_audit",
+    partition_by=("visit",),
+)
+write_delta(
+    sap_fundus_image_exclusions,
+    f"{output_root}/sap_fundus_image_exclusions",
+)
+
 write_delta(
     sap_fundus_images,
     f"{output_root}/sap_fundus_image_analysis",
@@ -869,12 +902,24 @@ write_delta(
 )
 
 display(
-    sap_fundus_images.groupBy("visit", "image_age_link_status")
+    sap_fundus_image_linkage.groupBy("visit", "image_age_link_status")
     .agg(
         F.count("*").alias("images"),
         F.countDistinct("participant_id").alias("participants"),
     )
     .orderBy("visit", "image_age_link_status")
+)
+display(
+    sap_fundus_image_exclusions.groupBy("image_age_link_status")
+    .agg(
+        F.count("*").alias("excluded_images"),
+        F.countDistinct("participant_id").alias("participants"),
+    )
+    .orderBy("image_age_link_status")
+)
+print(
+    "Age-linked images retained:",
+    sap_fundus_images.count(),
 )
 
 # COMMAND ----------
@@ -1004,7 +1049,11 @@ display(availability.orderBy("standard_name", "visit"))
 # MAGIC - `sap_questionnaire_extraction_log`: exact extracted CSV provenance
 # MAGIC - `sap_questionnaire_input_qc`: malformed-ID and duplicate-row counts
 # MAGIC - `sap_questionnaire_visit`: one row per participant and visit
-# MAGIC - `sap_fundus_image_analysis`: one row per image with visit-matched age
+# MAGIC - `sap_fundus_image_linkage_audit`: every parseable BL/F1 image and its
+# MAGIC   age-link status
+# MAGIC - `sap_fundus_image_exclusions`: images excluded for an unparsed ID,
+# MAGIC   unsupported visit, unmatched questionnaire visit, or missing age
+# MAGIC - `sap_fundus_image_analysis`: only images with a visit-matched age
 # MAGIC - `sap_age_linkage_qc`: BL/F1 released-age versus date-proxy checks
 # MAGIC - `sap_variable_availability`: source-column and unresolved-item audit
 # MAGIC - `sap_questionnaire_duplicate_conflicts`: written only when genuinely

@@ -115,6 +115,8 @@ class RETFoundNotebookContractTests(unittest.TestCase):
         self.assertIn("age_join_keys", notebook)
         self.assertIn("refresh_cached_metadata", notebook)
         self.assertIn('validate="one_to_one"', notebook)
+        self.assertIn('"exclude_images_without_age", "true"', notebook)
+        self.assertIn('F.col("age").isNotNull()', notebook)
         self.assertIn("if run_all_images:", notebook)
         self.assertIn("max_images = 0", notebook)
         self.assertIn('manifest_spark.groupBy("visit")', notebook)
