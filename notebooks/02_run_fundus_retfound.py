@@ -142,10 +142,9 @@ if pipeline_batch_size < 1:
 
 if run_all_images:
     max_images = 0
-    dbutils.widgets.set("max_images", "0")
+    print("run_all_images=true overrides max_images to 0 for this run.")
     if output_root.name == "fundus_retfound_smoke":
         output_root = output_root.with_name("fundus_retfound")
-        dbutils.widgets.set("output_root", str(output_root))
         print("Full run output_root:", output_root)
     if save_preprocessed:
         print(
@@ -200,7 +199,6 @@ if source_format == "delta" and not databricks_path_exists(source_path):
             f"manifest: {fallback}"
         )
         source_path = fallback
-        dbutils.widgets.set("source_path", fallback)
     else:
         raise FileNotFoundError(
             "No fundus source manifest exists. Either set source_path to a "

@@ -124,6 +124,7 @@ class RETFoundNotebookContractTests(unittest.TestCase):
         self.assertIn("quality_batches_root", notebook)
         self.assertIn("embedding_batches_root", notebook)
         self.assertIn("resumed", notebook)
+        self.assertNotIn("dbutils.widgets.set", notebook)
         self.assertIn('cast("array<float>")', notebook)
         self.assertIn('.option("overwriteSchema", "true")', notebook)
 
