@@ -64,6 +64,9 @@ dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
 dbutils.widgets.text("batch_size", "2")
 dbutils.widgets.text("max_images", "8")
+dbutils.widgets.dropdown("run_all_images", "false", ["false", "true"])
+dbutils.widgets.text("pipeline_batch_size", "500")
+dbutils.widgets.dropdown("resume_batches", "true", ["true", "false"])
 dbutils.widgets.dropdown("save_preprocessed", "true", ["true", "false"])
 dbutils.widgets.dropdown("force_embeddings", "true", ["true", "false"])
 dbutils.widgets.dropdown("train_age_head", "false", ["false", "true"])
@@ -77,9 +80,14 @@ dbutils.widgets.dropdown(
 # COMMAND ----------
 # MAGIC %md
 # MAGIC The defaults perform a safe eight-image validation using the same
-# MAGIC settings as the successful smoke test. For the full cohort, change
-# MAGIC `output_root` to `.../fundus_retfound`, set `max_images=0`, use
-# MAGIC `batch_size=8` initially on a Tesla T4, and retain
+# MAGIC settings as the successful smoke test. Set `run_all_images=true` to use
+# MAGIC every available image in the full manifest. This includes all BL and F1
+# MAGIC images independently; the visits are not sampled, paired, or balanced.
+# MAGIC The flag overrides `max_images`, changes the default smoke output folder
+# MAGIC to `.../fundus_retfound`, and refuses to fall back to a smoke manifest.
+# MAGIC Full runs are checkpointed in 500-image pipeline batches by default.
+# MAGIC `batch_size` remains the GPU minibatch size inside each saved pipeline
+# MAGIC batch. Use `batch_size=8` initially on a Tesla T4 and retain
 # MAGIC `run_explainability=false` until an age-head artifact is available.
 
 # COMMAND ----------
@@ -93,6 +101,9 @@ allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
 device_requested = dbutils.widgets.get("device")
 batch_size = int(dbutils.widgets.get("batch_size"))
 max_images = int(dbutils.widgets.get("max_images"))
+run_all_images = dbutils.widgets.get("run_all_images") == "true"
+pipeline_batch_size = int(dbutils.widgets.get("pipeline_batch_size"))
+resume_batches = dbutils.widgets.get("resume_batches") == "true"
 save_preprocessed = dbutils.widgets.get("save_preprocessed") == "true"
 force_embeddings = dbutils.widgets.get("force_embeddings") == "true"
 should_train_age_head = dbutils.widgets.get("train_age_head") == "true"
@@ -101,6 +112,28 @@ should_explain = dbutils.widgets.get("run_explainability") == "true"
 n_explain = int(dbutils.widgets.get("n_explain"))
 explainability_method = dbutils.widgets.get("explainability_method")
 expected_embedding_dim = 1024
+
+if pipeline_batch_size < 1:
+    raise ValueError("pipeline_batch_size must be at least 1.")
+
+if run_all_images:
+    max_images = 0
+    dbutils.widgets.set("max_images", "0")
+    if output_root.name == "fundus_retfound_smoke":
+        output_root = output_root.with_name("fundus_retfound")
+        dbutils.widgets.set("output_root", str(output_root))
+        print("Full run output_root:", output_root)
+    if save_preprocessed:
+        print(
+            "Full-run notice: save_preprocessed=true will create one additional "
+            "JPEG per quality-passing image. Set it to false if only vectors "
+            "and quality metrics are required."
+        )
+    if batch_size < 4:
+        print(
+            "Full-run notice: batch_size is below 4. This is safe but slow; "
+            "batch_size=8 is the recommended starting point for a Tesla T4."
+        )
 
 
 def databricks_path_exists(path: str) -> bool:
@@ -112,6 +145,12 @@ def databricks_path_exists(path: str) -> bool:
 
 
 if source_format == "delta" and not databricks_path_exists(source_path):
+    if run_all_images:
+        raise FileNotFoundError(
+            "run_all_images=true requires the full fundus image manifest; "
+            "smoke-manifest fallback is disabled. Missing source_path: "
+            f"{source_path}"
+        )
     derived_root = (
         "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
         "clsa_retinal_aging"
@@ -162,9 +201,12 @@ from fundus_retfound_pipeline import (  # noqa: E402
     load_retfound_model,
     prepare_model_input,
     predict_retinal_age,
+    read_embedding_failure_paths,
     run_explainability,
     run_quality_pipeline,
     train_age_head,
+    write_frame,
+    write_json,
 )
 
 print("PyTorch:", torch.__version__)
@@ -241,7 +283,7 @@ else:
 
 manifest_spark = manifest_spark.filter(
     F.col("image_path").isNotNull() & F.col("participant_id").isNotNull()
-)
+).dropDuplicates(["image_path"])
 manifest_spark = manifest_spark.orderBy(
     "participant_id",
     "eye",
@@ -249,6 +291,24 @@ manifest_spark = manifest_spark.orderBy(
 )
 if max_images > 0:
     manifest_spark = manifest_spark.limit(max_images)
+
+if run_all_images:
+    print(
+        "run_all_images=true: processing every distinct image path; BL and F1 "
+        "counts are intentionally allowed to differ."
+    )
+    if "visit" not in manifest_spark.columns:
+        raise ValueError(
+            "The full manifest must contain a visit column identifying BL/F1."
+        )
+    display(
+        manifest_spark.groupBy("visit")
+        .agg(
+            F.count("*").alias("images"),
+            F.countDistinct("participant_id").alias("participants"),
+        )
+        .orderBy("visit")
+    )
 
 display(
     manifest_spark.agg(
@@ -274,11 +334,109 @@ quality_config = QualityConfig(
     model_input_size=224,
     save_preprocessed=save_preprocessed,
 )
-quality = run_quality_pipeline(
-    manifest,
-    output_root / "01_quality",
-    quality_config,
-)
+quality_output_root = output_root / "01_quality"
+if run_all_images:
+    quality_batch_frames = []
+    quality_batches_root = quality_output_root / "batches"
+    quality_batches_root.mkdir(parents=True, exist_ok=True)
+    n_quality_batches = (
+        len(manifest) + pipeline_batch_size - 1
+    ) // pipeline_batch_size
+
+    for batch_number, start in enumerate(
+        range(0, len(manifest), pipeline_batch_size),
+        start=1,
+    ):
+        stop = min(start + pipeline_batch_size, len(manifest))
+        manifest_batch = manifest.iloc[start:stop].copy()
+        batch_root = quality_batches_root / (
+            f"batch_{start:09d}_{stop:09d}"
+        )
+        batch_cache = batch_root / "fundus_quality_manifest.parquet"
+        quality_batch = None
+
+        if resume_batches and batch_cache.exists():
+            try:
+                cached = pd.read_parquet(batch_cache)
+                expected_paths = set(
+                    manifest_batch["image_path"].astype(str)
+                )
+                cached_paths = set(cached["image_path"].astype(str))
+                if (
+                    len(cached) == len(manifest_batch)
+                    and cached_paths == expected_paths
+                ):
+                    quality_batch = cached
+                    print(
+                        f"[quality {batch_number}/{n_quality_batches}] "
+                        f"resumed {len(cached):,} images from {batch_cache}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[quality {batch_number}/{n_quality_batches}] "
+                        "cache does not match the current manifest; recomputing.",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[quality {batch_number}/{n_quality_batches}] "
+                    f"cache is unreadable ({type(exc).__name__}); recomputing.",
+                    flush=True,
+                )
+
+        if quality_batch is None:
+            print(
+                f"[quality {batch_number}/{n_quality_batches}] processing "
+                f"manifest rows {start:,}:{stop:,}",
+                flush=True,
+            )
+            quality_batch = run_quality_pipeline(
+                manifest_batch,
+                batch_root,
+                quality_config,
+            )
+            print(
+                f"[quality {batch_number}/{n_quality_batches}] saved "
+                f"{len(quality_batch):,} rows to {batch_cache}",
+                flush=True,
+            )
+        quality_batch_frames.append(quality_batch)
+
+    quality = (
+        pd.concat(quality_batch_frames, ignore_index=True)
+        .drop_duplicates(subset=["image_path"], keep="last")
+    )
+    if len(quality) != len(manifest):
+        raise RuntimeError(
+            "Checkpointed quality rows do not match the full manifest: "
+            f"quality={len(quality):,}, manifest={len(manifest):,}."
+        )
+    write_frame(
+        quality,
+        quality_output_root / "fundus_quality_manifest.parquet",
+    )
+    quality.drop(columns=["embedding"], errors="ignore").to_csv(
+        quality_output_root / "fundus_quality_manifest.csv",
+        index=False,
+    )
+    write_json(
+        {
+            "n_images": int(len(quality)),
+            "n_pass": int(quality["quality_pass"].sum()),
+            "n_fail": int((~quality["quality_pass"]).sum()),
+            "pass_rate": float(quality["quality_pass"].mean()),
+            "pipeline_batch_size": pipeline_batch_size,
+            "n_batches": n_quality_batches,
+        },
+        quality_output_root / "fundus_quality_summary.json",
+    )
+else:
+    quality = run_quality_pipeline(
+        manifest,
+        quality_output_root,
+        quality_config,
+    )
 display(
     spark.createDataFrame(
         quality.groupby(["quality_pass", "quality_reasons"], dropna=False)
@@ -360,76 +518,225 @@ print("Device:", device)
 print("RETFound repository:", resolved_repo)
 print("Checkpoint:", resolved_checkpoint)
 
-embeddings = extract_retfound_embeddings(
-    quality,
-    output_root / "02_embeddings",
-    retfound_config,
-    quality_config,
-    model=model,
-    device=device,
-    checkpoint_path=resolved_checkpoint,
-    force=force_embeddings,
-)
+embedding_output_root = output_root / "02_embeddings"
+if run_all_images:
+    embedding_batch_frames = []
+    embedding_failure_frames = []
+    embedding_batches_root = embedding_output_root / "batches"
+    embedding_batches_root.mkdir(parents=True, exist_ok=True)
+    passing_for_batches = passing_quality.reset_index(drop=True)
+    n_embedding_batches = (
+        len(passing_for_batches) + pipeline_batch_size - 1
+    ) // pipeline_batch_size
+
+    for batch_number, start in enumerate(
+        range(0, len(passing_for_batches), pipeline_batch_size),
+        start=1,
+    ):
+        stop = min(start + pipeline_batch_size, len(passing_for_batches))
+        quality_batch = passing_for_batches.iloc[start:stop].copy()
+        batch_root = embedding_batches_root / (
+            f"batch_{start:09d}_{stop:09d}"
+        )
+        batch_cache = batch_root / "retfound_embeddings.parquet"
+        batch_failures_path = (
+            batch_root / "retfound_embedding_failures.csv"
+        )
+        embedding_batch = None
+        expected_paths = set(quality_batch["image_path"].astype(str))
+
+        if resume_batches and batch_cache.exists():
+            try:
+                cached = pd.read_parquet(batch_cache)
+                cached_paths = set(cached["image_path"].astype(str))
+                cached_failure_paths = read_embedding_failure_paths(
+                    batch_failures_path
+                )
+                accounted_paths = cached_paths | cached_failure_paths
+                if (
+                    accounted_paths == expected_paths
+                    and not (cached_paths & cached_failure_paths)
+                ):
+                    embedding_batch = cached
+                    print(
+                        f"[RETFound {batch_number}/{n_embedding_batches}] "
+                        f"resumed {len(cached):,} vectors and "
+                        f"{len(cached_failure_paths):,} failures.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[RETFound {batch_number}/{n_embedding_batches}] "
+                        "cache is incomplete or stale; recomputing this batch.",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[RETFound {batch_number}/{n_embedding_batches}] "
+                    f"cache is unreadable ({type(exc).__name__}); recomputing.",
+                    flush=True,
+                )
+
+        if embedding_batch is None:
+            print(
+                f"[RETFound {batch_number}/{n_embedding_batches}] processing "
+                f"quality-passing rows {start:,}:{stop:,}",
+                flush=True,
+            )
+            embedding_batch = extract_retfound_embeddings(
+                quality_batch,
+                batch_root,
+                retfound_config,
+                quality_config,
+                model=model,
+                device=device,
+                checkpoint_path=resolved_checkpoint,
+                force=True,
+            )
+            print(
+                f"[RETFound {batch_number}/{n_embedding_batches}] saved "
+                f"{len(embedding_batch):,} vectors to {batch_cache}",
+                flush=True,
+            )
+
+        embedding_batch_frames.append(embedding_batch)
+        if batch_failures_path.exists():
+            try:
+                embedding_failure_frames.append(
+                    pd.read_csv(batch_failures_path)
+                )
+            except pd.errors.EmptyDataError:
+                pass
+
+    embeddings = (
+        pd.concat(embedding_batch_frames, ignore_index=True)
+        .drop_duplicates(subset=["image_path"], keep="last")
+    )
+    failures = (
+        pd.concat(embedding_failure_frames, ignore_index=True)
+        if embedding_failure_frames
+        else pd.DataFrame(columns=["image_path", "error"])
+    )
+    failures = failures.drop_duplicates(subset=["image_path"], keep="last")
+    write_frame(
+        embeddings,
+        embedding_output_root / "retfound_embeddings.parquet",
+    )
+    failures.to_csv(
+        embedding_output_root / "retfound_embedding_failures.csv",
+        index=False,
+    )
+    write_json(
+        {
+            "n_input_quality_passing": int(len(passing_for_batches)),
+            "n_embedded": int(len(embeddings)),
+            "n_failed": int(len(failures)),
+            "embedding_dim": int(embeddings["embedding_dim"].iloc[0]),
+            "pipeline_batch_size": pipeline_batch_size,
+            "n_batches": n_embedding_batches,
+            "device": device,
+            "checkpoint": str(resolved_checkpoint),
+        },
+        embedding_output_root / "retfound_embedding_metadata.json",
+    )
+else:
+    embeddings = extract_retfound_embeddings(
+        quality,
+        embedding_output_root,
+        retfound_config,
+        quality_config,
+        model=model,
+        device=device,
+        checkpoint_path=resolved_checkpoint,
+        force=force_embeddings,
+    )
 print("embedding rows:", len(embeddings))
 print("embedding dimension:", embeddings["embedding_dim"].unique())
 
-embedding_matrix = np.stack(embeddings["embedding"].to_numpy()).astype(
-    np.float32
-)
 expected_shape = (len(embeddings), expected_embedding_dim)
-if embedding_matrix.shape != expected_shape:
-    raise ValueError(
-        f"Expected embedding matrix {expected_shape}, got {embedding_matrix.shape}."
+if run_all_images:
+    # Validate one saved vector at a time to avoid allocating an additional
+    # approximately 0.5 GiB dense matrix on the driver for the full cohort.
+    min_norm = float("inf")
+    max_norm = 0.0
+    preview_norms = []
+    for vector_number, vector in enumerate(embeddings["embedding"]):
+        array = np.asarray(vector, dtype=np.float32)
+        if array.shape != (expected_embedding_dim,):
+            raise ValueError(
+                f"Vector {vector_number} has shape {array.shape}; expected "
+                f"({expected_embedding_dim},)."
+            )
+        if not np.isfinite(array).all():
+            raise ValueError(
+                f"RETFound vector {vector_number} contains NaN or infinity."
+            )
+        norm = float(np.linalg.norm(array))
+        if norm <= 0:
+            raise ValueError(
+                f"RETFound vector {vector_number} has zero length."
+            )
+        min_norm = min(min_norm, norm)
+        max_norm = max(max_norm, norm)
+        if vector_number < 20:
+            preview_norms.append(norm)
+else:
+    embedding_matrix = np.stack(embeddings["embedding"].to_numpy()).astype(
+        np.float32
     )
-if not np.isfinite(embedding_matrix).all():
-    raise ValueError("RETFound vectors contain NaN or infinity.")
-
-norms = np.linalg.norm(embedding_matrix, axis=1)
-if not np.all(norms > 0):
-    raise ValueError("At least one RETFound vector has zero length.")
+    if embedding_matrix.shape != expected_shape:
+        raise ValueError(
+            f"Expected embedding matrix {expected_shape}, got "
+            f"{embedding_matrix.shape}."
+        )
+    if not np.isfinite(embedding_matrix).all():
+        raise ValueError("RETFound vectors contain NaN or infinity.")
+    norms = np.linalg.norm(embedding_matrix, axis=1)
+    if not np.all(norms > 0):
+        raise ValueError("At least one RETFound vector has zero length.")
+    min_norm = float(norms.min())
+    max_norm = float(norms.max())
+    preview_norms = [float(value) for value in norms[:20]]
 
 quality_paths = set(passing_quality["image_path"].astype(str))
 embedded_paths = set(embeddings["image_path"].astype(str))
 failure_path = output_root / "02_embeddings" / "retfound_embedding_failures.csv"
-failure_paths: set[str] = set()
-if failure_path.exists() and failure_path.stat().st_size > 0:
-    failures = pd.read_csv(failure_path)
-    if "image_path" in failures.columns:
-        failure_paths = set(failures["image_path"].dropna().astype(str))
+failure_paths = read_embedding_failure_paths(failure_path)
 unaccounted_paths = quality_paths - embedded_paths - failure_paths
 cached_extra_paths = embedded_paths - quality_paths
 if unaccounted_paths or cached_extra_paths:
     raise RuntimeError(
         "The embedding cache does not match this manifest. Use a new "
-        "output_root or set force_embeddings=true. "
+        "output_root, or set resume_batches=false for a clean batch rerun. "
         f"Unaccounted={len(unaccounted_paths)}, extra={len(cached_extra_paths)}."
     )
 
-print("Final embedding matrix shape:", embedding_matrix.shape)
-print("Vector dtype:", embedding_matrix.dtype)
-print("Vector L2 norm range:", float(norms.min()), float(norms.max()))
+print("Final embedding matrix shape:", expected_shape)
+print("Vector dtype: float32")
+print("Vector L2 norm range:", min_norm, max_norm)
 
-# Store a Spark-native copy for downstream Databricks SQL and Delta joins.
-vector_records = []
-for row_number, (_, record) in enumerate(embeddings.iterrows()):
-    vector_records.append(
-        {
-            "participant_id": str(record["participant_id"]),
-            "visit": str(record.get("visit", "")),
-            "eye": str(record.get("eye", "")),
-            "image_path": str(record["image_path"]),
-            "embedding_dim": int(record["embedding_dim"]),
-            "retfound_model": str(record["retfound_model"]),
-            "retfound_checkpoint_sha256": str(
-                record["retfound_checkpoint_sha256"]
-            ),
-            "embedding": [
-                float(value) for value in embedding_matrix[row_number]
-            ],
-        }
-    )
-
-vectors_spark = spark.createDataFrame(vector_records)
+# Load the durable Parquet result directly into Spark. Avoid converting every
+# 1,024-element vector to a Python list on the driver during a full run.
+embedding_parquet_path = str(
+    embedding_output_root / "retfound_embeddings.parquet"
+)
+embeddings_spark = spark.read.parquet(embedding_parquet_path)
+vectors_spark = embeddings_spark.select(
+    F.col("participant_id").cast("string").alias("participant_id"),
+    F.col("visit").cast("string").alias("visit")
+    if "visit" in embeddings_spark.columns
+    else F.lit("").alias("visit"),
+    F.col("eye").cast("string").alias("eye")
+    if "eye" in embeddings_spark.columns
+    else F.lit("").alias("eye"),
+    F.col("image_path").cast("string").alias("image_path"),
+    F.col("embedding_dim").cast("int").alias("embedding_dim"),
+    F.col("retfound_model").cast("string").alias("retfound_model"),
+    F.col("retfound_checkpoint_sha256")
+    .cast("string")
+    .alias("retfound_checkpoint_sha256"),
+    F.col("embedding"),
+)
 vectors_delta_path = str(
     output_root / "02_embeddings" / "retfound_embeddings_delta"
 )
@@ -439,17 +746,20 @@ vectors_delta_path = str(
     .save(vectors_delta_path)
 )
 
-preview_rows = [
-    {
-        "participant_id": record["participant_id"],
-        "visit": record["visit"],
-        "eye": record["eye"],
-        "embedding_dim": record["embedding_dim"],
-        "l2_norm": float(norms[row_number]),
-        "first_8_values": record["embedding"][:8],
-    }
-    for row_number, record in enumerate(vector_records)
-]
+preview_rows = []
+for row_number, (_, record) in enumerate(embeddings.head(20).iterrows()):
+    preview_rows.append(
+        {
+            "participant_id": str(record["participant_id"]),
+            "visit": str(record.get("visit", "")),
+            "eye": str(record.get("eye", "")),
+            "embedding_dim": int(record["embedding_dim"]),
+            "l2_norm": preview_norms[row_number],
+            "first_8_values": [
+                float(value) for value in record["embedding"][:8]
+            ],
+        }
+    )
 display(spark.createDataFrame(preview_rows))
 print("Parquet vectors:", output_root / "02_embeddings/retfound_embeddings.parquet")
 print("Delta vectors:", vectors_delta_path)

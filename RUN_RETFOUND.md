@@ -83,6 +83,9 @@ source_format=delta
 source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/participant_analysis_master
 output_root=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_retfound_smoke
 max_images=32
+run_all_images=false
+pipeline_batch_size=500
+resume_batches=true
 allow_downloads=true
 retfound_repo=
 checkpoint_path=
@@ -138,23 +141,39 @@ square padding, bicubic resize to 256, then resize to 224 for RETFound.
 Use a new durable output path and set:
 
 ```text
-max_images=0
-batch_size=16
+source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_image_manifest
+output_root=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_retfound
+run_all_images=true
+pipeline_batch_size=500
+resume_batches=true
+batch_size=8
+save_preprocessed=false
 force_embeddings=false
 run_explainability=false
 ```
+
+`pipeline_batch_size=500` is the durable checkpoint interval. `batch_size=8`
+is the GPU minibatch inside each checkpoint and can be tuned independently.
+BL and F1 are both processed in full; their image counts are not balanced.
+After every 500-image quality or embedding batch, a Parquet result is saved
+under the corresponding `batches/` directory. If the cluster terminates,
+rerun with the same output path and `resume_batches=true`; validated completed
+batches are skipped and only the interrupted batch is repeated.
 
 The first complete run writes:
 
 ```text
 01_quality/fundus_quality_manifest.parquet
 01_quality/fundus_quality_summary.json
+01_quality/batches/batch_*/fundus_quality_manifest.parquet
 02_embeddings/retfound_embeddings.parquet
 02_embeddings/retfound_embedding_failures.csv
 02_embeddings/retfound_embedding_metadata.json
+02_embeddings/batches/batch_*/retfound_embeddings.parquet
 ```
 
-Subsequent runs load the embedding cache unless `force_embeddings=true`.
+Subsequent runs validate and load each saved batch when
+`resume_batches=true`. Use a new output path for a clean rerun.
 Checkpoint SHA-256 and model configuration are stored with the embedding
 metadata.
 

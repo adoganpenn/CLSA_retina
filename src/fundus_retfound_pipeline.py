@@ -134,6 +134,24 @@ def write_frame(frame: Any, path: str | os.PathLike[str]) -> Path:
     return path
 
 
+def read_embedding_failure_paths(
+    path: str | os.PathLike[str],
+) -> set[str]:
+    """Read an embedding failure log, treating empty logs as no failures."""
+    import pandas as pd
+
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    try:
+        failures = pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return set()
+    if "image_path" not in failures.columns:
+        return set()
+    return set(failures["image_path"].dropna().astype(str))
+
+
 def _json_safe(value: Any) -> Any:
     try:
         import numpy as np
@@ -591,16 +609,26 @@ def extract_retfound_embeddings(
                     row["retfound_model"] = retfound_config.model_name
                     row["retfound_checkpoint_sha256"] = checkpoint_hash
                     rows.append(row)
-            print(
-                f"embedded {min(start + retfound_config.batch_size, len(work)):,}/"
-                f"{len(work):,}"
+            processed = min(start + retfound_config.batch_size, len(work))
+            progress_interval = max(retfound_config.batch_size, 100)
+            crossed_interval = (
+                processed // progress_interval
+                != start // progress_interval
             )
+            if len(work) <= 32 or processed == len(work) or crossed_interval:
+                print(f"embedded {processed:,}/{len(work):,}")
 
     output = pd.DataFrame(rows)
     if output.empty:
         raise RuntimeError("Every image failed before RETFound embedding extraction.")
     write_frame(output, cache_path)
-    pd.DataFrame(failures).to_csv(failures_path, index=False)
+    # Keep a stable schema even when every image succeeds. Pandas otherwise
+    # writes a newline-only file, which raises EmptyDataError when a resume run
+    # reads it.
+    pd.DataFrame(
+        failures,
+        columns=["image_path", "error"],
+    ).to_csv(failures_path, index=False)
     dimensions = sorted(output["embedding_dim"].dropna().astype(int).unique())
     if len(dimensions) != 1:
         raise ValueError(f"Inconsistent embedding dimensions: {dimensions}")

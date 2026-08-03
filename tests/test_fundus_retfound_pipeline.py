@@ -10,7 +10,11 @@ from src.fundus_retfound_pipeline import (
     _apply_calibration,
     _decompose_layer_norm_mean_pool,
     preprocess_fundus,
+    read_embedding_failure_paths,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FundusQualityTests(unittest.TestCase):
@@ -35,6 +39,26 @@ class FundusQualityTests(unittest.TestCase):
             self.assertGreater(result.contrast_std, 5.0)
             self.assertGreaterEqual(result.crop_x0, 0)
             self.assertLess(result.crop_x1, size)
+
+    def test_empty_embedding_failure_logs_mean_no_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            newline_only = root / "newline_only.csv"
+            newline_only.write_text("\n", encoding="utf-8")
+            self.assertEqual(
+                read_embedding_failure_paths(newline_only),
+                set(),
+            )
+
+            header_only = root / "header_only.csv"
+            header_only.write_text(
+                "image_path,error\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                read_embedding_failure_paths(header_only),
+                set(),
+            )
 
 
 class CalibrationAndAttributionTests(unittest.TestCase):
@@ -73,6 +97,24 @@ class CalibrationAndAttributionTests(unittest.TestCase):
             result["prediction_from_feature"],
             places=10,
         )
+
+
+class RETFoundNotebookContractTests(unittest.TestCase):
+    def test_full_run_flag_uses_all_visits_without_balancing(self) -> None:
+        notebook = (
+            REPOSITORY_ROOT / "notebooks" / "02_run_fundus_retfound.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"run_all_images", "false"', notebook)
+        self.assertIn('"pipeline_batch_size", "500"', notebook)
+        self.assertIn('"resume_batches", "true"', notebook)
+        self.assertIn("if run_all_images:", notebook)
+        self.assertIn("max_images = 0", notebook)
+        self.assertIn('manifest_spark.groupBy("visit")', notebook)
+        self.assertIn("counts are intentionally allowed to differ", notebook)
+        self.assertIn("quality_batches_root", notebook)
+        self.assertIn("embedding_batches_root", notebook)
+        self.assertIn("resumed", notebook)
 
 
 if __name__ == "__main__":
