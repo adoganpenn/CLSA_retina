@@ -735,7 +735,7 @@ vectors_spark = embeddings_spark.select(
     F.col("retfound_checkpoint_sha256")
     .cast("string")
     .alias("retfound_checkpoint_sha256"),
-    F.col("embedding"),
+    F.col("embedding").cast("array<float>").alias("embedding"),
 )
 vectors_delta_path = str(
     output_root / "02_embeddings" / "retfound_embeddings_delta"
@@ -743,6 +743,7 @@ vectors_delta_path = str(
 (
     vectors_spark.write.format("delta")
     .mode("overwrite")
+    .option("overwriteSchema", "true")
     .save(vectors_delta_path)
 )
 

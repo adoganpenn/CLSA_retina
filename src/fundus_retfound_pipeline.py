@@ -523,7 +523,38 @@ def load_retfound_model(
     )
     state = checkpoint_object.get("model", checkpoint_object)
     load_message = model.load_state_dict(state, strict=False)
-    print(f"RETFound checkpoint load: {load_message}")
+    expected_missing = {
+        "fc_norm.weight",
+        "fc_norm.bias",
+        "head.weight",
+        "head.bias",
+    }
+    allowed_unexpected_names = {
+        "mask_token",
+        "decoder_pos_embed",
+        "norm.weight",
+        "norm.bias",
+    }
+    missing = set(load_message.missing_keys)
+    unexpected = set(load_message.unexpected_keys)
+    critical_missing = missing - expected_missing
+    critical_unexpected = {
+        key
+        for key in unexpected
+        if key not in allowed_unexpected_names
+        and not key.startswith("decoder_")
+        and not key.startswith("decoder_blocks.")
+    }
+    if critical_missing or critical_unexpected:
+        raise RuntimeError(
+            "RETFound checkpoint has unexpected encoder incompatibilities: "
+            f"missing={sorted(critical_missing)}, "
+            f"unexpected={sorted(critical_unexpected)}"
+        )
+    print(
+        "RETFound encoder checkpoint loaded; expected untrained output/global-"
+        f"pool keys={sorted(missing)}, ignored MAE-only keys={len(unexpected)}."
+    )
     model.to(device)
     model.eval()
     return model, device, repository, checkpoint
