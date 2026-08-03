@@ -26,18 +26,29 @@ first accept the model's access conditions.
 
 ## Recommended workflow
 
-### 1. Build the CLSA participant/image table
+### 1. Build the image table and visit-matched ages
 
-Run:
+Run, in order:
 
 `notebooks/01_build_clsa_dataset.py`
 
-The desired source for RETFound is:
+`notebooks/03_build_sap_analysis_dataset.py`
 
-`/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/participant_analysis_master`
+Notebook 03 extracts the released age corresponding to each image visit:
 
-It should contain one participant row, `age_years`, and the `fundus_images`
-array. Verify image ID linkage before running any model.
+- BL → `AGE_NMBR_COM`
+- F1 → `AGE_NMBR_COF1`
+
+It writes the image-level age source:
+
+`/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/sap_fundus_image_analysis`
+
+Notebook 02 uses the full image manifest as its source:
+
+`/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_image_manifest`
+
+and automatically joins the age source by image path. It must not attach one
+participant-level FUP2 age to both BL and F1 images.
 
 ### 2. Start a Databricks GPU cluster
 
@@ -142,6 +153,9 @@ Use a new durable output path and set:
 
 ```text
 source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_image_manifest
+age_source_path=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/sap_fundus_image_analysis
+attach_visit_matched_age=true
+require_nonzero_age_coverage=true
 output_root=/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging/fundus_retfound
 run_all_images=true
 pipeline_batch_size=500

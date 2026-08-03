@@ -53,6 +53,17 @@ dbutils.widgets.dropdown(
     "source_format", "delta", ["delta", "parquet", "csv"]
 )
 dbutils.widgets.text(
+    "age_source_path",
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/sap_fundus_image_analysis",
+)
+dbutils.widgets.dropdown(
+    "attach_visit_matched_age", "true", ["true", "false"]
+)
+dbutils.widgets.dropdown(
+    "require_nonzero_age_coverage", "true", ["true", "false"]
+)
+dbutils.widgets.text(
     "output_root",
     "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
     "clsa_retinal_aging/fundus_retfound_smoke",
@@ -94,6 +105,13 @@ dbutils.widgets.dropdown(
 repo_root = dbutils.widgets.get("repo_root").rstrip("/")
 source_path = dbutils.widgets.get("source_path").strip()
 source_format = dbutils.widgets.get("source_format")
+age_source_path = dbutils.widgets.get("age_source_path").strip()
+attach_visit_matched_age = (
+    dbutils.widgets.get("attach_visit_matched_age") == "true"
+)
+require_nonzero_age_coverage = (
+    dbutils.widgets.get("require_nonzero_age_coverage") == "true"
+)
 output_root = Path(dbutils.widgets.get("output_root").strip())
 retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
 checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
@@ -230,11 +248,12 @@ else:
 
 if "fundus_images" in source.columns:
     # participant_analysis_master: explode the image array without duplicating
-    # image bytes. Age comes from the harmonized questionnaire.
+    # image bytes. Its participant-level age may be from a different visit, so
+    # it is deliberately not attached to BL and F1 images here. The visit-aware
+    # age join below supplies AGE_NMBR_COM/AGE_NMBR_COF1 instead.
     manifest_spark = (
         source.select(
             F.col("participant_id").cast("string").alias("participant_id"),
-            F.col("age_years").cast("double").alias("age"),
             F.col("sex_at_birth").cast("string").alias("sex"),
             F.explode("fundus_images").alias("fundus"),
         )
@@ -246,6 +265,7 @@ if "fundus_images" in source.columns:
             F.col("fundus.eye_parsed").alias("eye"),
             F.col("fundus.filename").alias("filename"),
             F.col("fundus.visit").alias("visit"),
+            F.lit(None).cast("double").alias("age"),
         )
     )
 elif "image_path" in source.columns:
@@ -265,10 +285,26 @@ elif "image_path" in source.columns:
         selections.append(F.col("visit").cast("string").alias("visit"))
     if "filename" in source.columns:
         selections.append(F.col("filename").cast("string").alias("filename"))
-    if "age" in source.columns:
+    if "age_at_fundus_years" in source.columns:
+        selections.append(
+            F.col("age_at_fundus_years").cast("double").alias("age")
+        )
+    elif "age" in source.columns:
         selections.append(F.col("age").cast("double").alias("age"))
     elif "age_years" in source.columns:
         selections.append(F.col("age_years").cast("double").alias("age"))
+    if "age_at_fundus_source_variable" in source.columns:
+        selections.append(
+            F.col("age_at_fundus_source_variable")
+            .cast("string")
+            .alias("age_source_variable")
+        )
+    elif "age_source_variable" in source.columns:
+        selections.append(
+            F.col("age_source_variable")
+            .cast("string")
+            .alias("age_source_variable")
+        )
     if "sex" in source.columns:
         selections.append(F.col("sex").cast("string").alias("sex"))
     elif "sex_at_birth" in source.columns:
@@ -281,6 +317,202 @@ else:
         "Source must contain fundus_images or an image_path column."
     )
 
+if "visit" in manifest_spark.columns:
+    manifest_spark = manifest_spark.withColumn(
+        "visit",
+        F.when(F.upper(F.col("visit")).isin("F1", "FUP1"), F.lit("F1"))
+        .when(F.upper(F.col("visit")) == "BL", F.lit("BL"))
+        .otherwise(F.upper(F.col("visit"))),
+    )
+
+age_already_available = (
+    "age" in manifest_spark.columns
+    and manifest_spark.filter(F.col("age").isNotNull()).limit(1).count() > 0
+)
+age_source_is_input = (
+    source_format == "delta"
+    and source_path.rstrip("/") == age_source_path.rstrip("/")
+)
+
+if attach_visit_matched_age and not (
+    age_already_available and age_source_is_input
+):
+    if not age_source_path:
+        raise ValueError(
+            "attach_visit_matched_age=true requires age_source_path."
+        )
+    if not databricks_path_exists(age_source_path):
+        raise FileNotFoundError(
+            "Visit-matched age source was not found. Run notebook 03 first; "
+            "it extracts AGE_NMBR_COM for BL and AGE_NMBR_COF1 for F1 and "
+            "writes sap_fundus_image_analysis. Missing path: "
+            f"{age_source_path}"
+        )
+
+    age_source = spark.read.format("delta").load(age_source_path)
+    age_column = next(
+        (
+            column
+            for column in (
+                "age_at_fundus_years",
+                "age_years",
+                "age",
+            )
+            if column in age_source.columns
+        ),
+        None,
+    )
+    if age_column is None:
+        raise ValueError(
+            "Age source must contain age_at_fundus_years, age_years, or age. "
+            f"Available columns: {age_source.columns}"
+        )
+
+    source_variable_column = next(
+        (
+            column
+            for column in (
+                "age_at_fundus_source_variable",
+                "age_source_variable",
+            )
+            if column in age_source.columns
+        ),
+        None,
+    )
+    sex_column = next(
+        (
+            column
+            for column in (
+                "sex_at_birth",
+                "baseline_sex_at_birth",
+                "sex",
+            )
+            if column in age_source.columns
+        ),
+        None,
+    )
+
+    if "image_path" in age_source.columns:
+        age_join_keys = ["image_path"]
+        age_lookup = age_source.select(
+            F.col("image_path").cast("string").alias("image_path"),
+            F.col(age_column).cast("double").alias("linked_age"),
+            F.col(source_variable_column)
+            .cast("string")
+            .alias("linked_age_source_variable")
+            if source_variable_column
+            else F.lit(None).cast("string").alias(
+                "linked_age_source_variable"
+            ),
+            F.col(sex_column).cast("string").alias("linked_sex")
+            if sex_column
+            else F.lit(None).cast("string").alias("linked_sex"),
+        )
+    else:
+        required_age_keys = {"participant_id", "visit"}
+        missing_age_keys = required_age_keys - set(age_source.columns)
+        if missing_age_keys:
+            raise ValueError(
+                "Age source without image_path must contain participant_id "
+                f"and visit; missing {sorted(missing_age_keys)}."
+            )
+        age_join_keys = ["participant_id", "visit"]
+        age_lookup = age_source.select(
+            F.col("participant_id").cast("string").alias("participant_id"),
+            F.when(
+                F.upper(F.col("visit")).isin("F1", "FUP1"),
+                F.lit("F1"),
+            )
+            .when(F.upper(F.col("visit")) == "BL", F.lit("BL"))
+            .otherwise(F.upper(F.col("visit")))
+            .alias("visit"),
+            F.col(age_column).cast("double").alias("linked_age"),
+            F.col(source_variable_column)
+            .cast("string")
+            .alias("linked_age_source_variable")
+            if source_variable_column
+            else F.lit(None).cast("string").alias(
+                "linked_age_source_variable"
+            ),
+            F.col(sex_column).cast("string").alias("linked_sex")
+            if sex_column
+            else F.lit(None).cast("string").alias("linked_sex"),
+        )
+
+    duplicate_age_keys = (
+        age_lookup.groupBy(*age_join_keys)
+        .count()
+        .filter(F.col("count") != 1)
+    )
+    if duplicate_age_keys.limit(1).count():
+        raise ValueError(
+            f"Age source is not unique on {age_join_keys}: {age_source_path}"
+        )
+
+    manifest_spark = manifest_spark.join(
+        age_lookup,
+        age_join_keys,
+        "left",
+    )
+    if "age" in manifest_spark.columns:
+        manifest_spark = manifest_spark.withColumn(
+            "age",
+            F.coalesce(F.col("age"), F.col("linked_age")),
+        )
+    else:
+        manifest_spark = manifest_spark.withColumnRenamed(
+            "linked_age",
+            "age",
+        )
+    if "sex" in manifest_spark.columns:
+        manifest_spark = manifest_spark.withColumn(
+            "sex",
+            F.coalesce(F.col("sex"), F.col("linked_sex")),
+        )
+    else:
+        manifest_spark = manifest_spark.withColumnRenamed(
+            "linked_sex",
+            "sex",
+        )
+    if "age_source_variable" in manifest_spark.columns:
+        manifest_spark = manifest_spark.withColumn(
+            "age_source_variable",
+            F.coalesce(
+                F.col("age_source_variable"),
+                F.col("linked_age_source_variable"),
+            ),
+        )
+    else:
+        manifest_spark = manifest_spark.withColumnRenamed(
+            "linked_age_source_variable",
+            "age_source_variable",
+        )
+    manifest_spark = manifest_spark.drop(
+        "linked_age",
+        "linked_sex",
+        "linked_age_source_variable",
+    )
+    print("Attached visit-matched age from:", age_source_path)
+
+if "age" not in manifest_spark.columns:
+    manifest_spark = manifest_spark.withColumn(
+        "age",
+        F.lit(None).cast("double"),
+    )
+if "age_source_variable" not in manifest_spark.columns:
+    manifest_spark = manifest_spark.withColumn(
+        "age_source_variable",
+        F.when(F.col("visit") == "BL", F.lit("AGE_NMBR_COM"))
+        .when(F.col("visit") == "F1", F.lit("AGE_NMBR_COF1"))
+        .otherwise(F.lit(None).cast("string")),
+    )
+manifest_spark = manifest_spark.withColumn(
+    "age_link_status",
+    F.when(F.col("age").isNotNull(), F.lit("visit_age_matched")).otherwise(
+        F.lit("visit_age_missing")
+    ),
+)
+
 manifest_spark = manifest_spark.filter(
     F.col("image_path").isNotNull() & F.col("participant_id").isNotNull()
 ).dropDuplicates(["image_path"])
@@ -291,6 +523,28 @@ manifest_spark = manifest_spark.orderBy(
 )
 if max_images > 0:
     manifest_spark = manifest_spark.limit(max_images)
+
+display(
+    manifest_spark.groupBy(
+        "visit",
+        "age_source_variable",
+        "age_link_status",
+    )
+    .agg(
+        F.count("*").alias("images"),
+        F.countDistinct("participant_id").alias("participants"),
+    )
+    .orderBy("visit", "age_link_status")
+)
+if (
+    require_nonzero_age_coverage
+    and not manifest_spark.filter(F.col("age").isNotNull()).limit(1).count()
+):
+    raise RuntimeError(
+        "No images have visit-matched age. Run notebook 03 to build "
+        "sap_fundus_image_analysis, confirm age_source_path, and rerun 02. "
+        "BL requires AGE_NMBR_COM; F1 requires AGE_NMBR_COF1."
+    )
 
 if run_all_images:
     print(
@@ -323,6 +577,22 @@ manifest = manifest_spark.toPandas()
 if manifest.empty:
     raise ValueError(f"No usable images were found in {source_path}.")
 display(manifest_spark.limit(20))
+
+
+def refresh_cached_metadata(cached, current):
+    """Keep derived results but replace source metadata by image path."""
+    metadata_columns = [
+        column for column in current.columns if column != "image_path"
+    ]
+    derived = cached.drop(columns=metadata_columns, errors="ignore")
+    metadata = current[["image_path", *metadata_columns]].copy()
+    return derived.merge(
+        metadata,
+        on="image_path",
+        how="left",
+        validate="one_to_one",
+        sort=False,
+    )
 
 # COMMAND ----------
 # MAGIC %md
@@ -366,7 +636,10 @@ if run_all_images:
                     len(cached) == len(manifest_batch)
                     and cached_paths == expected_paths
                 ):
-                    quality_batch = cached
+                    quality_batch = refresh_cached_metadata(
+                        cached,
+                        manifest_batch,
+                    )
                     print(
                         f"[quality {batch_number}/{n_quality_batches}] "
                         f"resumed {len(cached):,} images from {batch_cache}",
@@ -557,7 +830,10 @@ if run_all_images:
                     accounted_paths == expected_paths
                     and not (cached_paths & cached_failure_paths)
                 ):
-                    embedding_batch = cached
+                    embedding_batch = refresh_cached_metadata(
+                        cached,
+                        quality_batch,
+                    )
                     print(
                         f"[RETFound {batch_number}/{n_embedding_batches}] "
                         f"resumed {len(cached):,} vectors and "
