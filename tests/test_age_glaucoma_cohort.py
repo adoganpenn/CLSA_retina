@@ -61,6 +61,9 @@ class AgeGlaucomaCohortTests(unittest.TestCase):
         self.assertIn("screen_complete", source)
         self.assertIn("quality_pass", source)
         self.assertIn("age_match_pairs", source)
+        self.assertIn("load_completed_clsa_embeddings", source)
+        self.assertIn("load_completed_clsa_quality", source)
+        self.assertIn("completed_batch_parquets_cached_as_delta", source)
         self.assertNotIn("dbutils.widgets.set", source)
 
 
