@@ -19,9 +19,31 @@ Start with:
   RETFound, retinal-age, and explainability run sequence.
 - [`notebooks/02_run_fundus_retfound.py`](notebooks/02_run_fundus_retfound.py)
   to run the complete fundus pipeline in Databricks.
+- [`notebooks/retfound_quality_passed.py`](notebooks/retfound_quality_passed.py)
+  as a live producer/consumer handoff: while notebook 02 continues writing its
+  213 technical-quality batches, it detects each completed 500-row Parquet and
+  immediately vectorizes only images that explicitly pass every QC flag.
 - [`notebooks/03_build_sap_analysis_dataset.py`](notebooks/03_build_sap_analysis_dataset.py)
   to extract the exact BL/F1 questionnaire releases, derive the SAP variables,
   and link every fundus image to the age released for its matching visit.
+- [`notebooks/correlation.py`](notebooks/correlation.py) to stratify retinal age
+  across the SAP measures and evaluate participant-grouped comorbidity models
+  from the 1,024-dimensional RETFound vectors.
+- [`Age_Glaucoma/01_build_age_matched_cohort.ipynb`](Age_Glaucoma/01_build_age_matched_cohort.ipynb)
+  to apply the CLSA quality pipeline to the completed Zeiss DICOM/RETFound
+  cohort and construct conservative, visit-specific age-matched CLSA ocular
+  controls without reusing participants.
+
+Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
+embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
+averages both eyes to one participant-visit record, uses out-of-fold retinal-age
+predictions when available, and prevents BL/F1 records from the same participant
+from crossing model folds. Derived analysis tables are written under:
+
+```text
+/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/
+clsa_retinal_aging/correlation
+```
 
 The first phase of `01_build_clsa_dataset.py` is metadata-only: it reads ZIP
 central directories and questionnaire CSV headers without extracting images or
