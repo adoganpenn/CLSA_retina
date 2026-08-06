@@ -30,9 +30,9 @@ Start with:
   across the SAP measures and evaluate participant-grouped comorbidity models
   from the 1,024-dimensional RETFound vectors.
 - [`Age_Glaucoma/01_build_age_matched_cohort.ipynb`](Age_Glaucoma/01_build_age_matched_cohort.ipynb)
-  to apply the CLSA quality pipeline to the completed Zeiss DICOM/RETFound
-  cohort and construct conservative, visit-specific age-matched CLSA ocular
-  controls without reusing participants.
+  to reuse the completed source-specific Zeiss RETFound vectors and construct
+  conservative, visit-specific age-matched CLSA ocular controls without
+  reusing participants. Zeiss images are not subjected to CLSA QC thresholds.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It

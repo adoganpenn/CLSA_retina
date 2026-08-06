@@ -54,7 +54,9 @@ class AgeGlaucomaCohortTests(unittest.TestCase):
         source = "\n".join(
             "".join(cell.get("source", [])) for cell in notebook["cells"]
         )
-        self.assertIn("run_zeiss_clsa_quality", source)
+        self.assertNotIn("run_zeiss_clsa_quality", source)
+        self.assertIn("zeiss_source_pipeline_pass", source)
+        self.assertIn("valid_1024_element_embedding_in_completed_chunk", source)
         self.assertIn("greedy_age_match", source)
         self.assertIn("screen_complete", source)
         self.assertIn("quality_pass", source)
