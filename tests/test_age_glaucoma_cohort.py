@@ -64,6 +64,8 @@ class AgeGlaucomaCohortTests(unittest.TestCase):
         self.assertIn("load_completed_clsa_embeddings", source)
         self.assertIn("load_completed_clsa_quality", source)
         self.assertIn("completed_batch_parquets_cached_as_delta", source)
+        self.assertIn("PARQUET_COLUMN_DATA_TYPE_MISMATCH", source)
+        self.assertIn('F.col("embedding").cast("array<float>")', source)
         self.assertNotIn("dbutils.widgets.set", source)
 
 
