@@ -33,6 +33,10 @@ Start with:
   to reuse the completed source-specific Zeiss RETFound vectors and construct
   conservative, visit-specific age-matched CLSA ocular controls without
   reusing participants. Zeiss images are not subjected to CLSA QC thresholds.
+- [`Age_Glaucoma/02_debug_age_matching.py`](Age_Glaucoma/02_debug_age_matching.py)
+  for identifier-free aggregate diagnostics of CLSA control attrition, Zeiss
+  and CLSA age overlap, nearest-age distances, and feasible match counts across
+  several calipers.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
