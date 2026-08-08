@@ -44,6 +44,11 @@ Start with:
 - [`Age_Glaucoma/04_compare_matched_explainability.py`](Age_Glaucoma/04_compare_matched_explainability.py)
   to reproduce source-specific RETFound inputs, verify stored embeddings, and
   compare matched subgroup attribution and spatial-outlier maps on a GPU.
+- [`Age_Glaucoma/05_age_gap_extremes_explainability.py`](Age_Glaucoma/05_age_gap_extremes_explainability.py)
+  to compare participant-level top and bottom retinal-age-gap deciles, run
+  max-|T| permutation inference, perform age/sex-matched sensitivity analyses,
+  and quantify whether attributions overlap exploratory retinal-physiology or
+  image-artifact proxy maps.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
