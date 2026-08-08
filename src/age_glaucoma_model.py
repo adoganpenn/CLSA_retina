@@ -300,6 +300,66 @@ def prepare_zeiss_dicom_input(
     return (array - mean) / std, display_image
 
 
+def load_zeiss_retfound_model(
+    checkpoint_path: str | Path,
+    device: str,
+) -> Any:
+    """Recreate the exact timm encoder used for the stored Zeiss vectors."""
+    import timm
+    import torch
+
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Zeiss RETFound checkpoint not found: {checkpoint_path}")
+    model = timm.create_model(
+        "vit_large_patch16_224",
+        pretrained=False,
+        num_classes=0,
+        global_pool="avg",
+    )
+    checkpoint_object = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    state = checkpoint_object.get("model", checkpoint_object)
+    load_message = model.load_state_dict(state, strict=False)
+    allowed_missing = {
+        "fc_norm.weight",
+        "fc_norm.bias",
+        "head.weight",
+        "head.bias",
+    }
+    allowed_unexpected = {
+        "mask_token",
+        "decoder_pos_embed",
+        "norm.weight",
+        "norm.bias",
+    }
+    critical_missing = set(load_message.missing_keys) - allowed_missing
+    critical_unexpected = {
+        key
+        for key in load_message.unexpected_keys
+        if key not in allowed_unexpected
+        and not key.startswith("decoder_")
+        and not key.startswith("decoder_blocks.")
+    }
+    if critical_missing or critical_unexpected:
+        raise RuntimeError(
+            "Zeiss timm RETFound checkpoint has encoder incompatibilities: "
+            f"missing={sorted(critical_missing)}, "
+            f"unexpected={sorted(critical_unexpected)}"
+        )
+    model.to(device)
+    model.eval()
+    print(
+        "Zeiss timm encoder loaded; expected non-encoder keys were ignored: "
+        f"missing={len(load_message.missing_keys)}, "
+        f"unexpected={len(load_message.unexpected_keys)}."
+    )
+    return model
+
+
 def exact_patch_map_from_array(
     model: Any,
     age_model: Mapping[str, Any],

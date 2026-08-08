@@ -19,16 +19,24 @@
 # MAGIC On a fresh GPU cluster, run once and restart Python:
 # MAGIC
 # MAGIC ```python
-# MAGIC %pip install -r /Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina/requirements-retfound.txt
-# MAGIC %pip install pydicom pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg
+# MAGIC %pip install "timm==1.0.28" pydicom pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg
 # MAGIC dbutils.library.restartPython()
 # MAGIC ```
+
+# COMMAND ----------
+# MAGIC %pip install "timm==1.0.28" pydicom pylibjpeg pylibjpeg-libjpeg pylibjpeg-openjpeg
+
+# COMMAND ----------
+dbutils.library.restartPython()
 
 # COMMAND ----------
 from pathlib import Path
 import importlib
 import json
+import os
+import shutil
 import sys
+import tempfile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -47,6 +55,12 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text("retfound_repo", "")
 dbutils.widgets.text("checkpoint_path", "")
+dbutils.widgets.text(
+    "checkpoint_cache_path",
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth",
+    "Persistent RETFound checkpoint",
+)
 dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
@@ -61,6 +75,10 @@ repo_root = Path(dbutils.widgets.get("repo_root").strip())
 output_root = Path(dbutils.widgets.get("age_glaucoma_output_root").strip())
 retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
 checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
+checkpoint_cache_value = dbutils.widgets.get("checkpoint_cache_path").strip()
+checkpoint_cache_path = (
+    Path(checkpoint_cache_value) if checkpoint_cache_value else None
+)
 allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
 hf_token = dbutils.widgets.get("hf_token").strip()
 device_requested = dbutils.widgets.get("device")
@@ -83,11 +101,6 @@ if spatial_outlier_z <= 0:
 if device_requested == "cuda" and not torch.cuda.is_available():
     raise RuntimeError("CUDA was requested, but this compute has no CUDA GPU")
 
-if hf_token:
-    import os
-
-    os.environ["HF_TOKEN"] = hf_token
-
 module_root = repo_root / "src"
 if str(module_root) not in sys.path:
     sys.path.insert(0, str(module_root))
@@ -105,9 +118,20 @@ if not getattr(_fundus_pipeline, "PARQUET_RUNTIME_ATTRS_SAFE", False):
     )
 print("Reloaded PlanMetrics-safe fundus pipeline:", _fundus_pipeline.__file__)
 
+import age_glaucoma_model as _age_model  # noqa: E402
+
+_age_model = importlib.reload(_age_model)
+if not hasattr(_age_model, "load_zeiss_retfound_model"):
+    raise RuntimeError(
+        "The loaded age_glaucoma_model predates source-specific Zeiss encoder "
+        f"support. Pull Git and restart Python. Loaded module: {_age_model.__file__}"
+    )
+print("Reloaded source-specific age/glaucoma module:", _age_model.__file__)
+
 from age_glaucoma_model import (  # noqa: E402
     attribution_group_statistics,
     exact_patch_map_from_array,
+    load_zeiss_retfound_model,
     prepare_zeiss_dicom_input,
 )
 from fundus_retfound_pipeline import (  # noqa: E402
@@ -116,6 +140,7 @@ from fundus_retfound_pipeline import (  # noqa: E402
     load_age_head,
     load_retfound_model,
     prepare_model_input,
+    sha256_file,
     write_frame,
 )
 
@@ -223,6 +248,32 @@ print(
 
 # COMMAND ----------
 age_bundle = load_age_head(model_path)
+
+# A checkpoint downloaded into /root/.cache belongs only to that cluster. Reuse
+# the durable Volume copy when present; otherwise require explicit gated-model
+# credentials before making a network request.
+if checkpoint_path:
+    configured_checkpoint = Path(checkpoint_path)
+    if not configured_checkpoint.is_file():
+        raise FileNotFoundError(
+            f"checkpoint_path is not a readable file: {configured_checkpoint}"
+        )
+elif checkpoint_cache_path and checkpoint_cache_path.is_file():
+    checkpoint_path = str(checkpoint_cache_path)
+    print("Using persistent RETFound checkpoint:", checkpoint_path)
+elif not allow_downloads:
+    raise FileNotFoundError(
+        "No RETFound checkpoint is available. Set checkpoint_path, retain the "
+        "default checkpoint_cache_path, or set allow_downloads=true and enter "
+        "an authorized temporary hf_token."
+    )
+elif not hf_token:
+    raise ValueError(
+        "The RETFound checkpoint is gated and is not present in persistent "
+        "storage. Enter an authorized temporary token in the hf_token widget "
+        "or set checkpoint_path to an existing RETFound_mae_natureCFP.pth file."
+    )
+
 retfound_config = RETFoundConfig(
     repo_path=retfound_repo,
     checkpoint_path=checkpoint_path,
@@ -230,9 +281,49 @@ retfound_config = RETFoundConfig(
     device=device_requested,
     batch_size=1,
 )
-model, device, resolved_repo, resolved_checkpoint = load_retfound_model(
-    retfound_config
-)
+if hf_token:
+    os.environ["HF_TOKEN"] = hf_token
+try:
+    try:
+        clsa_model, device, resolved_repo, resolved_checkpoint = load_retfound_model(
+            retfound_config
+        )
+    except Exception as exc:
+        message = str(exc).lower()
+        if any(
+            marker in message
+            for marker in ("gated repo", "gatedrepo", "401 client", "unauthorized")
+        ):
+            raise RuntimeError(
+                "Hugging Face rejected the RETFound checkpoint request. The "
+                "hf_token must belong to an account that has accepted access "
+                "for YukunZhou/RETFound_mae_natureCFP. No token was saved."
+            ) from None
+        raise
+finally:
+    os.environ.pop("HF_TOKEN", None)
+    hf_token = ""
+
+# Persist a newly downloaded gated checkpoint so later GPU clusters can run
+# without another token. Copy atomically and verify the complete file first.
+if (
+    checkpoint_cache_path
+    and Path(resolved_checkpoint) != checkpoint_cache_path
+    and not checkpoint_cache_path.exists()
+):
+    checkpoint_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_checkpoint = checkpoint_cache_path.with_suffix(
+        checkpoint_cache_path.suffix + ".partial"
+    )
+    shutil.copy2(resolved_checkpoint, temporary_checkpoint)
+    source_hash = sha256_file(resolved_checkpoint)
+    cached_hash = sha256_file(temporary_checkpoint)
+    if cached_hash != source_hash:
+        temporary_checkpoint.unlink(missing_ok=True)
+        raise RuntimeError("Persistent RETFound checkpoint hash verification failed")
+    temporary_checkpoint.replace(checkpoint_cache_path)
+    resolved_checkpoint = checkpoint_cache_path
+    print("Persisted RETFound checkpoint:", resolved_checkpoint)
 quality_config = QualityConfig(
     output_size=256,
     model_input_size=224,
@@ -241,6 +332,11 @@ quality_config = QualityConfig(
 print("Device:", device)
 print("RETFound repository:", resolved_repo)
 print("Checkpoint:", resolved_checkpoint)
+
+# The existing Zeiss vectors were generated by the attached Zeiss notebook's
+# direct timm ViT-L/16 model, not by RETFound/models_vit.py. Recreate that model
+# separately so both stored feature spaces are validated against their source.
+zeiss_model = load_zeiss_retfound_model(resolved_checkpoint, device)
 
 # COMMAND ----------
 # MAGIC %md
@@ -256,6 +352,7 @@ def is_left_eye(record):
 
 records = []
 map_arrays = []
+additive_map_arrays = []
 combined = pd.concat([zeiss_selected, clsa_selected], ignore_index=True, sort=False)
 for index, (_, record) in enumerate(combined.iterrows(), start=1):
     source = str(record["cohort"])
@@ -263,10 +360,12 @@ for index, (_, record) in enumerate(combined.iterrows(), start=1):
     try:
         if source == "Zeiss glaucoma":
             input_array, _ = prepare_zeiss_dicom_input(image_path)
+            source_model = zeiss_model
         else:
             input_array = prepare_model_input(image_path, quality_config)
+            source_model = clsa_model
         result = exact_patch_map_from_array(
-            model=model,
+            model=source_model,
             age_model=age_bundle,
             input_array=input_array,
             device=device,
@@ -280,16 +379,14 @@ for index, (_, record) in enumerate(combined.iterrows(), start=1):
             and np.isfinite(result["embedding_cosine"])
             and result["embedding_cosine"] >= embedding_cosine_threshold
         )
-        map_path = map_root / f"map_{index:04d}.npz"
-        np.savez_compressed(
-            map_path,
-            variable_grid=variable_grid,
-            additive_grid=np.asarray(result["grid"], dtype=np.float64),
-        )
+        map_index = len(map_arrays)
         map_arrays.append(variable_grid)
+        additive_map_arrays.append(
+            np.asarray(result["grid"], dtype=np.float64)
+        )
         records.append(
             {
-                "map_index": index - 1,
+                "map_index": map_index,
                 "cohort": source,
                 "match_set_id": record["match_set_id"],
                 "participant_id": record["participant_id"],
@@ -302,7 +399,7 @@ for index, (_, record) in enumerate(combined.iterrows(), start=1):
                 ],
                 "reconstruction_error": result["reconstruction_error"],
                 "valid_for_group_comparison": valid,
-                "map_path": str(map_path),
+                "map_path": None,
                 "error": None,
             }
         )
@@ -328,6 +425,35 @@ for index, (_, record) in enumerate(combined.iterrows(), start=1):
         print(f"Explained {index:,}/{len(combined):,} images")
 
 explanation_manifest = pd.DataFrame(records)
+
+# NumPy compressed archives use Python ZipFile. Writing one archive per image
+# directly to a Unity Catalog Volume produced the observed delayed EIO close
+# errors. Create one archive on local disk, then atomically copy it to the
+# durable Volume.
+map_archive_path = explain_root / "source_specific_attribution_maps.npz"
+with tempfile.TemporaryDirectory(dir="/local_disk0/tmp") as temporary_directory:
+    local_archive = Path(temporary_directory) / map_archive_path.name
+    variable_maps_to_save = (
+        np.stack(map_arrays)
+        if map_arrays
+        else np.empty((0, 14, 14), dtype=np.float64)
+    )
+    additive_maps_to_save = (
+        np.stack(additive_map_arrays)
+        if additive_map_arrays
+        else np.empty((0, 14, 14), dtype=np.float64)
+    )
+    np.savez_compressed(
+        local_archive,
+        variable_maps=variable_maps_to_save,
+        additive_maps=additive_maps_to_save,
+    )
+    partial_archive = map_archive_path.with_suffix(".npz.partial")
+    shutil.copy2(local_archive, partial_archive)
+    partial_archive.replace(map_archive_path)
+explanation_manifest.loc[
+    explanation_manifest["map_index"].notna(), "map_path"
+] = str(map_archive_path)
 write_frame(
     explanation_manifest,
     explain_root / "source_specific_explainability_manifest.parquet",
@@ -340,6 +466,47 @@ quality_summary = (
 )
 display(quality_summary)
 
+reproduction_rows = []
+for cohort, group in explanation_manifest.groupby("cohort", sort=True):
+    cosine = pd.to_numeric(group["embedding_cosine"], errors="coerce")
+    reconstruction = pd.to_numeric(
+        group["reconstruction_error"], errors="coerce"
+    )
+    reproduction_rows.append(
+        {
+            "cohort": cohort,
+            "images": int(len(group)),
+            "processing_errors": int(group["error"].notna().sum()),
+            "finite_embedding_cosines": int(np.isfinite(cosine).sum()),
+            "cosine_min": float(cosine.min()) if cosine.notna().any() else np.nan,
+            "cosine_median": float(cosine.median()) if cosine.notna().any() else np.nan,
+            "cosine_max": float(cosine.max()) if cosine.notna().any() else np.nan,
+            "cosine_pass": int((cosine >= embedding_cosine_threshold).sum()),
+            "reconstruction_error_max": (
+                float(reconstruction.max())
+                if reconstruction.notna().any()
+                else np.nan
+            ),
+            "valid_images": int(group["valid_for_group_comparison"].sum()),
+        }
+    )
+reproduction_summary = pd.DataFrame(reproduction_rows)
+write_frame(
+    reproduction_summary,
+    explain_root / "embedding_reproduction_summary.csv",
+)
+display(reproduction_summary)
+
+error_summary = (
+    explanation_manifest.loc[explanation_manifest["error"].notna(), ["cohort", "error"]]
+    .assign(error_type=lambda value: value["error"].str.split(":", n=1).str[0])
+    .groupby(["cohort", "error_type"], as_index=False)
+    .size()
+    .rename(columns={"size": "images"})
+)
+if not error_summary.empty:
+    display(error_summary)
+
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## 4. Aggregate one attribution map per match set and cohort
@@ -351,11 +518,14 @@ valid_manifest = explanation_manifest[
 if valid_manifest.empty:
     raise RuntimeError(
         "No source-specific attributions reproduced their stored embeddings. "
-        "Inspect the manifest before interpreting any spatial comparison."
+        "Non-identifying diagnostics were saved to embedding_reproduction_summary.csv: "
+        f"{reproduction_summary.to_dict(orient='records')}"
     )
 
+map_archive = np.load(map_archive_path)
+saved_variable_maps = map_archive["variable_maps"]
 valid_map_lookup = {
-    int(row["map_index"]): np.load(row["map_path"])["variable_grid"]
+    int(row["map_index"]): saved_variable_maps[int(row["map_index"])]
     for _, row in valid_manifest.iterrows()
 }
 set_maps = []
@@ -561,8 +731,6 @@ print(json.dumps(explain_summary, indent=2))
 # MAGIC healthy Zeiss controls or CLSA glaucoma cases are available.
 
 # COMMAND ----------
-import os
-
 os.environ.pop("HF_TOKEN", None)
 try:
     dbutils.widgets.remove("hf_token")
