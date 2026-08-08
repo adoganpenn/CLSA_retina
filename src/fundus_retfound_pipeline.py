@@ -830,6 +830,8 @@ def train_age_head(
     embedding_frame: Any,
     output_dir: str | os.PathLike[str],
     config: AgeModelConfig = AgeModelConfig(),
+    *,
+    write_metadata: bool = True,
 ) -> tuple[Any, dict[str, Any]]:
     import joblib
     import numpy as np
@@ -928,7 +930,8 @@ def train_age_head(
     }
     metadata["model_path"] = str(model_path)
     metadata["oof_metrics"] = metrics.to_dict(orient="records")
-    write_json(metadata, output_dir / "retfound_age_model_metadata.json")
+    if write_metadata:
+        write_json(metadata, output_dir / "retfound_age_model_metadata.json")
     return predictions, bundle
 
 

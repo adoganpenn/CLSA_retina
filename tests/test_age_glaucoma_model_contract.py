@@ -40,6 +40,9 @@ class AgeGlaucomaModelContractTests(unittest.TestCase):
         self.assertIn("median_absolute_feature_smd", source)
         self.assertIn("recovered_partial_training", source)
         self.assertIn("metadata-serialization failure", source)
+        self.assertIn("importlib.reload", source)
+        self.assertIn("write_metadata=False", source)
+        self.assertIn("metadata writing is disabled", source)
         self.assertNotIn("dbutils.widgets.set", source)
 
     def test_explainability_is_source_specific_and_reproduction_gated(self) -> None:

@@ -20,6 +20,8 @@
 # COMMAND ----------
 from pathlib import Path
 import hashlib
+import importlib
+import inspect
 import json
 import sys
 
@@ -78,6 +80,23 @@ if not module_root.exists():
     raise FileNotFoundError(f"Repository source directory not found: {module_root}")
 if str(module_root) not in sys.path:
     sys.path.insert(0, str(module_root))
+
+import fundus_retfound_pipeline as _fundus_pipeline  # noqa: E402
+
+# Databricks keeps imported modules alive across notebook reruns. Force the
+# repository version to reload so a prior in-memory train_age_head cannot retain
+# the metadata-serialization bug after Git pull.
+_fundus_pipeline = importlib.reload(_fundus_pipeline)
+if "write_metadata" not in inspect.signature(
+    _fundus_pipeline.train_age_head
+).parameters:
+    raise RuntimeError(
+        "The loaded fundus_retfound_pipeline is stale and lacks the "
+        "write_metadata safety switch. Confirm repo_root, pull Git, and restart Python. "
+        f"Loaded module: {_fundus_pipeline.__file__}"
+    )
+print("Reloaded fundus pipeline:", _fundus_pipeline.__file__)
+print("Age-head metadata writing is disabled inside training for this workflow.")
 
 from age_glaucoma_cohort import greedy_age_match  # noqa: E402
 from age_glaucoma_model import (  # noqa: E402
@@ -241,6 +260,7 @@ else:
                 calibration="intercept",
                 random_state=20260807,
             ),
+            write_metadata=False,
         )
     age_bundle.update(
         {
