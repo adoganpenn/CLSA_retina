@@ -37,6 +37,13 @@ Start with:
   for identifier-free aggregate diagnostics of CLSA control attrition, Zeiss
   and CLSA age overlap, nearest-age distances, and feasible match counts across
   several calipers.
+- [`Age_Glaucoma/03_train_clsa_healthy_age_model.py`](Age_Glaucoma/03_train_clsa_healthy_age_model.py)
+  to train and freeze the participant-grouped `CLSA_healthy` RETFound age head,
+  apply it to Zeiss, graph retinal-age gap, and create a common-support,
+  participant-level age-only matched comparison.
+- [`Age_Glaucoma/04_compare_matched_explainability.py`](Age_Glaucoma/04_compare_matched_explainability.py)
+  to reproduce source-specific RETFound inputs, verify stored embeddings, and
+  compare matched subgroup attribution and spatial-outlier maps on a GPU.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
