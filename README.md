@@ -45,10 +45,12 @@ Start with:
   to reproduce source-specific RETFound inputs, verify stored embeddings, and
   compare matched subgroup attribution and spatial-outlier maps on a GPU.
 - [`Age_Glaucoma/05_age_gap_extremes_explainability.py`](Age_Glaucoma/05_age_gap_extremes_explainability.py)
-  to compare participant-level top and bottom retinal-age-gap deciles, run
-  max-|T| permutation inference, perform age/sex-matched sensitivity analyses,
-  and quantify whether attributions overlap exploratory retinal-physiology or
-  image-artifact proxy maps.
+  compares participant-level top and bottom retinal-age-gap deciles with
+  resumable exact attribution, max-|T| permutation inference, age/sex-matched
+  sensitivity analyses, and exploratory physiology- and artifact-proxy
+  overlays. Its `allow_repo_clone=true` default restores the small public
+  RETFound source on a fresh cluster while `allow_downloads=false` continues
+  to prohibit checkpoint downloads when the persistent checkpoint is present.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It

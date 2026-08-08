@@ -62,6 +62,10 @@ class RETFoundConfig:
     hf_repo: str = "YukunZhou/RETFound_mae_natureCFP"
     hf_filename: str = "RETFound_mae_natureCFP.pth"
     allow_downloads: bool = False
+    # Cloning the small public source repository is distinct from downloading
+    # the gated model checkpoint.  None preserves the historical behavior in
+    # which allow_downloads controls both operations.
+    allow_repo_clone: bool | None = None
     device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
     batch_size: int = 16
     model_name: str = "RETFound_mae"
@@ -496,10 +500,15 @@ def _ensure_retfound_repo(config: RETFoundConfig) -> Path:
     repository = cache_root / "RETFound"
     if (repository / "models_vit.py").exists():
         return repository
-    if not config.allow_downloads:
+    allow_repo_clone = (
+        config.allow_downloads
+        if config.allow_repo_clone is None
+        else config.allow_repo_clone
+    )
+    if not allow_repo_clone:
         raise FileNotFoundError(
             "RETFound repository is unavailable. Set repo_path, or set "
-            "allow_downloads=True to clone the configured official repository."
+            "allow_repo_clone=True to clone the configured public repository."
         )
     cache_root.mkdir(parents=True, exist_ok=True)
     subprocess.check_call(

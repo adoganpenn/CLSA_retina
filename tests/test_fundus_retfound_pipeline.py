@@ -1,20 +1,58 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
 
 from src.fundus_retfound_pipeline import (
     QualityConfig,
+    RETFoundConfig,
     _apply_calibration,
     _decompose_layer_norm_mean_pool,
+    _ensure_retfound_repo,
     preprocess_fundus,
     read_embedding_failure_paths,
 )
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+class RETFoundDependencyTests(unittest.TestCase):
+    def test_public_repo_clone_is_independent_of_checkpoint_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_root = Path(temporary_directory)
+
+            def fake_clone(command: list[str]) -> None:
+                repository = Path(command[-1])
+                repository.mkdir(parents=True)
+                (repository / "models_vit.py").write_text("", encoding="utf-8")
+
+            config = RETFoundConfig(
+                repo_cache_dir=str(cache_root),
+                allow_downloads=False,
+                allow_repo_clone=True,
+            )
+            with mock.patch(
+                "src.fundus_retfound_pipeline.subprocess.check_call",
+                side_effect=fake_clone,
+            ) as clone:
+                repository = _ensure_retfound_repo(config)
+
+            self.assertEqual(repository, cache_root / "RETFound")
+            clone.assert_called_once()
+
+    def test_repo_clone_can_be_prohibited_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = RETFoundConfig(
+                repo_cache_dir=temporary_directory,
+                allow_downloads=True,
+                allow_repo_clone=False,
+            )
+            with self.assertRaisesRegex(FileNotFoundError, "allow_repo_clone"):
+                _ensure_retfound_repo(config)
 
 
 class FundusQualityTests(unittest.TestCase):

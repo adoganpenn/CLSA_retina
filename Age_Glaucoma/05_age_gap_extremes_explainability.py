@@ -29,6 +29,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -57,6 +58,7 @@ dbutils.widgets.text(
     "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth",
 )
 dbutils.widgets.dropdown("allow_downloads", "false", ["false", "true"])
+dbutils.widgets.dropdown("allow_repo_clone", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
 dbutils.widgets.text("extreme_quantile", "0.10")
@@ -80,6 +82,7 @@ checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
 checkpoint_cache_value = dbutils.widgets.get("checkpoint_cache_path").strip()
 checkpoint_cache_path = Path(checkpoint_cache_value) if checkpoint_cache_value else None
 allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
+allow_repo_clone = dbutils.widgets.get("allow_repo_clone") == "true"
 hf_token = dbutils.widgets.get("hf_token").strip()
 device_requested = dbutils.widgets.get("device")
 extreme_quantile = float(dbutils.widgets.get("extreme_quantile"))
@@ -409,6 +412,7 @@ retfound_config = RETFoundConfig(
     repo_path=retfound_repo,
     checkpoint_path=checkpoint_path,
     allow_downloads=allow_downloads,
+    allow_repo_clone=allow_repo_clone,
     device=device_requested,
     batch_size=1,
 )
@@ -421,6 +425,16 @@ try:
 finally:
     os.environ.pop("HF_TOKEN", None)
     hf_token = ""
+
+try:
+    retfound_repo_commit = subprocess.check_output(
+        ["git", "-C", str(resolved_repo), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+except (OSError, subprocess.CalledProcessError):
+    retfound_repo_commit = "unknown"
+print("RETFound source:", resolved_repo)
+print("RETFound source commit:", retfound_repo_commit)
 
 if (
     checkpoint_cache_path
@@ -447,6 +461,7 @@ analysis_signature = hashlib.sha256(
     json.dumps(
         {
             "checkpoint_sha256": checkpoint_hash,
+            "retfound_repo_commit": retfound_repo_commit,
             "age_model_sha256": sha256_file(model_path),
             "helper_sha256": sha256_file(module_root / "age_gap_extremes.py"),
             "selection_metric": selection_metric,
@@ -1281,6 +1296,8 @@ run_summary = {
     "multiple_testing": "patchwise BH-FDR and max-|T| FWER",
     "age_sex_matching_caliper_years": age_match_caliper_years,
     "checkpoint_sha256": checkpoint_hash,
+    "retfound_repo": str(resolved_repo),
+    "retfound_repo_commit": retfound_repo_commit,
     "embedding_cosine_threshold": embedding_cosine_threshold,
     "left_eyes_horizontally_aligned": align_left_eyes,
     "cross_cohort_spatial_concordance": spatial_concordance,
