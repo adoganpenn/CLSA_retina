@@ -1,11 +1,26 @@
 from pathlib import Path
+import json
+import sys
 import unittest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
+
+from fundus_retfound_pipeline import _json_safe
 
 
 class AgeGlaucomaModelContractTests(unittest.TestCase):
+    def test_runtime_plan_metrics_are_json_safe(self) -> None:
+        class PlanMetrics:
+            def __str__(self) -> str:
+                return "runtime metrics"
+
+        safe = _json_safe({"oof_metrics": PlanMetrics()})
+        encoded = json.dumps(safe)
+        self.assertIn("PlanMetrics", encoded)
+        self.assertIn("runtime metrics", encoded)
+
     def test_training_notebook_uses_grouped_oof_and_frozen_model(self) -> None:
         source = (
             REPOSITORY_ROOT
@@ -23,6 +38,8 @@ class AgeGlaucomaModelContractTests(unittest.TestCase):
         self.assertIn("bootstrap_95_ci_low", source)
         self.assertIn("embedding_domain_shift_summary.csv", source)
         self.assertIn("median_absolute_feature_smd", source)
+        self.assertIn("recovered_partial_training", source)
+        self.assertIn("metadata-serialization failure", source)
         self.assertNotIn("dbutils.widgets.set", source)
 
     def test_explainability_is_source_specific_and_reproduction_gated(self) -> None:

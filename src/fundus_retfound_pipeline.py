@@ -19,7 +19,8 @@ an embedding-only Ridge age head.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
+from enum import Enum
 import hashlib
 import json
 import math
@@ -153,20 +154,45 @@ def read_embedding_failure_paths(
 
 
 def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
     try:
         import numpy as np
 
         if isinstance(value, np.generic):
-            return value.item()
+            return _json_safe(value.item())
+        if isinstance(value, np.ndarray):
+            return [_json_safe(item) for item in value.tolist()]
     except ModuleNotFoundError:
         pass
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, dict):
+    if isinstance(value, Enum):
+        return _json_safe(value.value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_safe(asdict(value))
+    if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, (list, tuple, set, frozenset)):
         return [_json_safe(item) for item in value]
-    return value
+    for method_name in ("to_dict", "as_dict", "_asdict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            try:
+                converted = method()
+            except Exception:
+                continue
+            if converted is not value:
+                return _json_safe(converted)
+    # Databricks may attach non-JSON execution metadata such as PlanMetrics to
+    # otherwise ordinary results. Preserve a readable diagnostic without
+    # allowing that runtime-only object to invalidate the durable JSON artifact.
+    return {
+        "python_type": f"{type(value).__module__}.{type(value).__name__}",
+        "string_value": str(value),
+    }
 
 
 def write_json(value: Mapping[str, Any], path: str | os.PathLike[str]) -> Path:

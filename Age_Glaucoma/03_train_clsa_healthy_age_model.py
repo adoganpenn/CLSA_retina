@@ -176,6 +176,12 @@ print(
 frozen_model_path = model_root / "CLSA_healthy.joblib"
 frozen_metadata_path = model_root / "CLSA_healthy_metadata.json"
 oof_prediction_path = model_root / "CLSA_healthy_oof_predictions.parquet"
+partial_model_path = (
+    model_root / "training_artifacts" / "retfound_age_head.joblib"
+)
+partial_oof_path = (
+    model_root / "training_artifacts" / "retfound_age_predictions_oof.parquet"
+)
 
 can_resume = (
     not force_retrain
@@ -194,16 +200,48 @@ if can_resume:
     clsa_oof = pd.read_parquet(oof_prediction_path)
     print("Resumed frozen model:", frozen_model_path)
 else:
-    clsa_oof, age_bundle = train_age_head(
-        clsa_training,
-        model_root / "training_artifacts",
-        AgeModelConfig(
-            alpha=ridge_alpha,
-            max_splits=cv_folds,
-            calibration="intercept",
-            random_state=20260807,
-        ),
+    recovered_partial_training = (
+        not force_retrain and partial_model_path.exists() and partial_oof_path.exists()
     )
+    if recovered_partial_training:
+        age_bundle = load_age_head(partial_model_path)
+        clsa_oof = pd.read_parquet(partial_oof_path)
+        required_oof_columns = {
+            "image_path",
+            "participant_id",
+            "retinal_age_prediction_oof",
+            "retinal_age_gap_oof",
+        }
+        missing_oof_columns = required_oof_columns - set(clsa_oof.columns)
+        if missing_oof_columns:
+            raise RuntimeError(
+                "Partial grouped-CV output is incomplete: "
+                f"{sorted(missing_oof_columns)}. Set force_retrain=true."
+            )
+        if set(clsa_oof["image_path"].astype(str)) != set(
+            clsa_training["image_path"].astype(str)
+        ):
+            raise RuntimeError(
+                "Partial grouped-CV output does not match the current training "
+                "images. Set force_retrain=true."
+            )
+        if int(age_bundle["embedding_dim"]) != 1024:
+            raise RuntimeError("Recovered partial model is not a 1,024-feature head")
+        print(
+            "Recovered the completed grouped-CV model and OOF predictions from "
+            "the prior metadata-serialization failure; Ridge fitting was not repeated."
+        )
+    else:
+        clsa_oof, age_bundle = train_age_head(
+            clsa_training,
+            model_root / "training_artifacts",
+            AgeModelConfig(
+                alpha=ridge_alpha,
+                max_splits=cv_folds,
+                calibration="intercept",
+                random_state=20260807,
+            ),
+        )
     age_bundle.update(
         {
             "model_name": "CLSA_healthy",
