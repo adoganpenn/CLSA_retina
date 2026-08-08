@@ -26,6 +26,7 @@
 
 # COMMAND ----------
 from pathlib import Path
+import importlib
 import json
 import sys
 
@@ -91,6 +92,19 @@ module_root = repo_root / "src"
 if str(module_root) not in sys.path:
     sys.path.insert(0, str(module_root))
 
+import fundus_retfound_pipeline as _fundus_pipeline  # noqa: E402
+
+# Databricks persists imported modules across notebook reruns. Reload the Git
+# version and refuse to continue if it predates the PlanMetrics-safe writer.
+_fundus_pipeline = importlib.reload(_fundus_pipeline)
+if not getattr(_fundus_pipeline, "PARQUET_RUNTIME_ATTRS_SAFE", False):
+    raise RuntimeError(
+        "The loaded fundus_retfound_pipeline has the old Parquet writer. "
+        "Pull the latest Git revision and restart Python. Loaded module: "
+        f"{_fundus_pipeline.__file__}"
+    )
+print("Reloaded PlanMetrics-safe fundus pipeline:", _fundus_pipeline.__file__)
+
 from age_glaucoma_model import (  # noqa: E402
     attribution_group_statistics,
     exact_patch_map_from_array,
@@ -132,6 +146,7 @@ for path in (model_path, pair_level_path, zeiss_images_path, clsa_images_path):
 
 # COMMAND ----------
 pair_level = pd.read_parquet(pair_level_path)
+pair_level.attrs = {}
 pair_level["absolute_paired_gap_difference"] = pair_level[
     "paired_age_gap_difference"
 ].abs()
@@ -168,6 +183,8 @@ display(selection_summary)
 # COMMAND ----------
 zeiss_images = pd.read_parquet(zeiss_images_path)
 clsa_images = pd.read_parquet(clsa_images_path)
+zeiss_images.attrs = {}
+clsa_images.attrs = {}
 zeiss_images["cohort"] = "Zeiss glaucoma"
 clsa_images["cohort"] = "CLSA healthy"
 

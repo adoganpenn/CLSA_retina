@@ -32,6 +32,11 @@ import sys
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 
+# Feature marker used by Databricks notebooks to reject a stale in-memory
+# module whose Parquet writer still serializes Spark Connect runtime attrs.
+PARQUET_RUNTIME_ATTRS_SAFE = True
+
+
 @dataclass(frozen=True)
 class QualityConfig:
     output_size: int = 256
@@ -127,7 +132,16 @@ def write_frame(frame: Any, path: str | os.PathLike[str]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     lower = path.name.lower()
     if lower.endswith(".parquet"):
-        frame.to_parquet(path, index=False)
+        # Pandas serializes ``DataFrame.attrs`` into Parquet schema metadata.
+        # Databricks can attach runtime objects (notably PlanMetrics) there;
+        # PyArrow then fails while JSON-encoding the otherwise valid frame.
+        # Attributes are execution metadata, not analysis columns, so remove
+        # them from a copy without mutating the caller's DataFrame.
+        output_frame = frame
+        if getattr(frame, "attrs", None):
+            output_frame = frame.copy(deep=False)
+            output_frame.attrs = {}
+        output_frame.to_parquet(path, index=False)
     elif lower.endswith(".csv") or lower.endswith(".csv.gz"):
         frame.to_csv(path, index=False)
     else:
@@ -845,6 +859,11 @@ def train_age_head(
         "Age training embeddings",
     )
     work = embedding_frame.copy().reset_index(drop=True)
+    # Spark Connect/Databricks may place PlanMetrics in DataFrame.attrs. Pandas
+    # propagates attrs through copies and later asks PyArrow to JSON-encode them
+    # during Parquet writes. They are not part of the analytical dataset.
+    if hasattr(work, "attrs"):
+        work.attrs = {}
     work["age"] = pd.to_numeric(work["age"], errors="coerce")
     work = work[
         work["age"].notna() & work["participant_id"].notna()

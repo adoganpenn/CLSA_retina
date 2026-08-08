@@ -176,6 +176,9 @@ clsa_training = validate_embedding_frame(
     "Screen-negative CLSA training embeddings",
     expected_dim=1024,
 )
+# Databricks may attach Spark Connect PlanMetrics to this Pandas DataFrame.
+# These runtime-only attrs are not variables and cannot be written by PyArrow.
+clsa_training.attrs = {}
 training_signature = embedding_dataset_signature(clsa_training)
 print(
     f"CLSA healthy training input: {len(clsa_training):,} images from "

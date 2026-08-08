@@ -1,16 +1,44 @@
 from pathlib import Path
 import json
 import sys
+import tempfile
 import unittest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
-from fundus_retfound_pipeline import _json_safe
+from fundus_retfound_pipeline import _json_safe, write_frame
 
 
 class AgeGlaucomaModelContractTests(unittest.TestCase):
+    def test_parquet_write_drops_databricks_runtime_attrs_from_copy(self) -> None:
+        class PlanMetrics:
+            pass
+
+        class FrameWithRuntimeAttrs:
+            def __init__(self) -> None:
+                self.attrs = {"databricks_plan_metrics": PlanMetrics()}
+                self.written_attrs = None
+
+            def copy(self, deep: bool = False):
+                copied = FrameWithRuntimeAttrs()
+                copied.attrs = dict(self.attrs)
+                copied._original = self
+                return copied
+
+            def to_parquet(self, path, index: bool = False) -> None:
+                self._original.written_attrs = dict(self.attrs)
+                Path(path).touch()
+
+        frame = FrameWithRuntimeAttrs()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "predictions.parquet"
+            write_frame(frame, output)
+
+        self.assertEqual(frame.written_attrs, {})
+        self.assertIn("databricks_plan_metrics", frame.attrs)
+
     def test_runtime_plan_metrics_are_json_safe(self) -> None:
         class PlanMetrics:
             def __str__(self) -> str:
@@ -43,6 +71,7 @@ class AgeGlaucomaModelContractTests(unittest.TestCase):
         self.assertIn("importlib.reload", source)
         self.assertIn("write_metadata=False", source)
         self.assertIn("metadata writing is disabled", source)
+        self.assertIn("clsa_training.attrs = {}", source)
         self.assertNotIn("dbutils.widgets.set", source)
 
     def test_explainability_is_source_specific_and_reproduction_gated(self) -> None:
@@ -59,6 +88,11 @@ class AgeGlaucomaModelContractTests(unittest.TestCase):
         self.assertIn("attribution_group_statistics", source)
         self.assertIn("patch_location_comparison.csv", source)
         self.assertIn("match_set_spatial_outliers.parquet", source)
+        self.assertIn("importlib.reload", source)
+        self.assertIn("PARQUET_RUNTIME_ATTRS_SAFE", source)
+        self.assertIn("pair_level.attrs = {}", source)
+        self.assertIn("zeiss_images.attrs = {}", source)
+        self.assertIn("clsa_images.attrs = {}", source)
         self.assertNotIn("train_age_head", source)
         self.assertNotIn("dbutils.widgets.set", source)
 
