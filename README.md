@@ -51,6 +51,16 @@ Start with:
   overlays. Its `allow_repo_clone=true` default restores the small public
   RETFound source on a fresh cluster while `allow_downloads=false` continues
   to prohibit checkpoint downloads when the persistent checkpoint is present.
+- [`Age_Glaucoma/06_three_cohort_glaucoma_analysis.py`](Age_Glaucoma/06_three_cohort_glaucoma_analysis.py)
+  materializes the quality-passing, glaucoma-only CLSA vectors from the
+  completed full RETFound run; applies the frozen healthy-CLSA age head; and
+  compares CLSA healthy, CLSA glaucoma-only, and Zeiss glaucoma participants.
+  It never reruns RETFound: the reusable Delta cache is preferred, with an
+  automatic fallback to the completed 500-image Parquet batches when needed.
+  The same-camera CLSA contrast is primary. Balanced additive location/scale
+  harmonization, held-out domain classification, and raw-versus-harmonized
+  Zeiss estimates are explicitly labeled sensitivity analyses because the
+  healthy-Zeiss design cell remains absent.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
