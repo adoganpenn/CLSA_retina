@@ -1110,13 +1110,15 @@ def _decompose_layer_norm_mean_pool(
     }
 
 
-def exact_patch_contributions(
+def exact_linear_patch_contributions(
     model: Any,
-    age_model: Mapping[str, Any],
+    coefficients: Any,
+    intercept: float,
     image_path: str | os.PathLike[str],
     device: str,
     quality_config: QualityConfig = QualityConfig(),
 ) -> dict[str, Any]:
+    """Exactly decompose any linear RETFound head into image-patch logits."""
     import numpy as np
 
     patch_tokens, _, _ = (
@@ -1124,10 +1126,11 @@ def exact_patch_contributions(
             model, image_path, device, quality_config
         )
     )
-    coefficients, intercept = _effective_linear_head(age_model)
+    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(-1)
+    intercept = float(intercept)
     if coefficients.shape[0] != patch_tokens.shape[1]:
         raise ValueError(
-            f"Age head has {coefficients.shape[0]} coefficients but RETFound "
+            f"Linear head has {coefficients.shape[0]} coefficients but RETFound "
             f"patch tokens have dimension {patch_tokens.shape[1]}."
         )
 
@@ -1164,30 +1167,81 @@ def exact_patch_contributions(
     }
 
 
-def occlusion_sensitivity(
+def exact_patch_contributions(
     model: Any,
     age_model: Mapping[str, Any],
     image_path: str | os.PathLike[str],
     device: str,
     quality_config: QualityConfig = QualityConfig(),
 ) -> dict[str, Any]:
+    """Backward-compatible exact decomposition for a fitted linear age head."""
+    coefficients, intercept = _effective_linear_head(age_model)
+    return exact_linear_patch_contributions(
+        model,
+        coefficients,
+        intercept,
+        image_path,
+        device,
+        quality_config,
+    )
+
+
+def linear_head_score_from_array(
+    model: Any,
+    coefficients: Any,
+    intercept: float,
+    array: Any,
+    device: str,
+) -> float:
+    """Score a prepared H x W x 3 image with a frozen linear RETFound head."""
     import numpy as np
     import torch
 
-    coefficients, intercept = _effective_linear_head(age_model)
+    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(-1)
+    tensor = torch.from_numpy(np.asarray(array)[None, ...]).to(device)
+    tensor = torch.einsum("nhwc->nchw", tensor).float()
+    with torch.inference_mode():
+        feature = model.forward_features(tensor)
+        if isinstance(feature, (tuple, list)):
+            feature = feature[0]
+        if getattr(feature, "ndim", 0) == 3:
+            if not getattr(model, "global_pool", False):
+                raise NotImplementedError(
+                    "Token-sequence scoring requires global_pool=True."
+                )
+            feature = model.fc_norm(feature[:, 1:, :].mean(dim=1))
+        feature = feature.squeeze().detach().cpu().numpy().reshape(-1)
+    if feature.size != coefficients.size:
+        raise ValueError(
+            f"RETFound feature dimension {feature.size} does not match linear "
+            f"head dimension {coefficients.size}."
+        )
+    return float(feature @ coefficients + float(intercept))
+
+
+def occlusion_linear_sensitivity(
+    model: Any,
+    coefficients: Any,
+    intercept: float,
+    image_path: str | os.PathLike[str],
+    device: str,
+    quality_config: QualityConfig = QualityConfig(),
+) -> dict[str, Any]:
+    """Patch occlusion sensitivity for any frozen linear RETFound head."""
+    import numpy as np
+
     array = prepare_model_input(image_path, quality_config)
     patch_size = 16
     grid_size = quality_config.model_input_size // patch_size
 
     def predict(image_array: Any) -> float:
-        tensor = torch.from_numpy(image_array[None, ...]).to(device)
-        tensor = torch.einsum("nhwc->nchw", tensor).float()
-        with torch.inference_mode():
-            feature = model.forward_features(tensor)
-            if isinstance(feature, (tuple, list)):
-                feature = feature[0]
-            feature = feature.squeeze().detach().cpu().numpy().reshape(-1)
-        return float(feature @ coefficients + intercept)
+        return linear_head_score_from_array(
+            model,
+            coefficients,
+            intercept,
+            image_array,
+            device,
+        )
 
     baseline = predict(array)
     drops = np.zeros((grid_size, grid_size), dtype=np.float64)
@@ -1208,6 +1262,25 @@ def occlusion_sensitivity(
         "prediction_from_feature": baseline,
         "reconstruction_error": math.nan,
     }
+
+
+def occlusion_sensitivity(
+    model: Any,
+    age_model: Mapping[str, Any],
+    image_path: str | os.PathLike[str],
+    device: str,
+    quality_config: QualityConfig = QualityConfig(),
+) -> dict[str, Any]:
+    """Backward-compatible patch occlusion for a fitted linear age head."""
+    coefficients, intercept = _effective_linear_head(age_model)
+    return occlusion_linear_sensitivity(
+        model,
+        coefficients,
+        intercept,
+        image_path,
+        device,
+        quality_config,
+    )
 
 
 def _select_explainability_rows(

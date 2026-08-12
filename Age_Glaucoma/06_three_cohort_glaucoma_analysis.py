@@ -1294,6 +1294,12 @@ post_auc = float(
         domain_diagnostics["stage"] == "harmonized", "domain_auc_mean"
     ].iloc[0]
 )
+post_auc_signed = float(
+    domain_diagnostics.loc[
+        domain_diagnostics["stage"] == "harmonized",
+        "domain_auc_signed_mean",
+    ].iloc[0]
+)
 
 run_summary = {
     "analysis": "three_cohort_glaucoma_retinal_age_triangulation",
@@ -1317,7 +1323,8 @@ run_summary = {
     "harmonization_method": harmonization_bundle["method"],
     "harmonization_mode": harmonization_mode,
     "harmonization_assumption": harmonization_bundle["assumption"],
-    "post_harmonization_domain_auc": post_auc,
+    "post_harmonization_domain_auc_effective": post_auc,
+    "post_harmonization_domain_auc_signed": post_auc_signed,
     "residual_domain_signal_flag_auc_gt_0_60": bool(post_auc > 0.60),
     "age_model_path": healthy_model_path,
     "age_model_sha256": hashlib.sha256(Path(healthy_model_path).read_bytes()).hexdigest(),

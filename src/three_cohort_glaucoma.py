@@ -64,7 +64,13 @@ def validate_embedding_frame(
         vectors.append(array)
     work["embedding"] = vectors
     if "sex" in work.columns:
-        work["sex_normalized"] = work["sex"].map(canonical_sex)
+        normalized = work["sex"].map(canonical_sex)
+        if "sex_normalized" in work.columns:
+            existing = work["sex_normalized"].map(canonical_sex)
+            normalized = normalized.where(normalized != "MISSING", existing)
+        work["sex_normalized"] = normalized
+    elif "sex_normalized" in work.columns:
+        work["sex_normalized"] = work["sex_normalized"].map(canonical_sex)
     else:
         work["sex_normalized"] = "MISSING"
     return work.reset_index(drop=True)
@@ -255,7 +261,9 @@ def greedy_match(
         candidates = controls.loc[sorted(available)].copy()
         for column in exact_columns:
             if column in cases.columns and column in controls.columns:
-                candidates = candidates[candidates[column].astype(str) == str(case[column])]
+                candidates = candidates.loc[
+                    candidates[column].astype(str) == str(case[column])
+                ].copy()
         if candidates.empty:
             continue
         candidates["_distance"] = (candidates[age_column] - case[age_column]).abs()
@@ -487,6 +495,76 @@ def apply_source_harmonizer(
     return output
 
 
+def crossfit_source_harmonizer(
+    frame: Any,
+    *,
+    folds: int = 5,
+    mode: str = "location_scale",
+    ridge: float = 1e-6,
+    expected_dim: int = 1024,
+    random_state: int = 20260811,
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Transform every participant with a harmonizer that did not see them.
+
+    Folds are stratified across the three observed source-by-glaucoma cells.
+    This mirrors held-out cross-device evaluation: each affine correction is
+    learned on development participants and applied only to evaluation
+    participants. CLSA embeddings remain unchanged by the underlying
+    harmonizer, while every Zeiss embedding is genuinely out of fit.
+    """
+    import numpy as np
+    from sklearn.model_selection import StratifiedKFold
+
+    if folds < 2:
+        raise ValueError("folds must be at least 2")
+    work = validate_embedding_frame(frame, "Cross-fit harmonization", expected_dim)
+    work = work.reset_index(drop=True).copy()
+    cell = work["source"].astype(str) + "|" + work["glaucoma"].astype(str)
+    minimum_cell = int(cell.value_counts().min())
+    if minimum_cell < folds:
+        raise ValueError(
+            f"Cross-fit harmonization requires at least {folds} records in "
+            f"every source-by-glaucoma cell; smallest cell has {minimum_cell}."
+        )
+    splitter = StratifiedKFold(
+        n_splits=folds,
+        shuffle=True,
+        random_state=random_state,
+    )
+    corrected: list[Any | None] = [None] * len(work)
+    fold_assignment = np.full(len(work), -1, dtype=int)
+    bundles: list[dict[str, Any]] = []
+    placeholder = np.zeros(len(work), dtype=np.int8)
+    for fold, (development, evaluation) in enumerate(
+        splitter.split(placeholder, cell.to_numpy())
+    ):
+        bundle = fit_additive_source_harmonizer(
+            work.iloc[development].copy(),
+            ridge=ridge,
+            expected_dim=expected_dim,
+        )
+        transformed = apply_source_harmonizer(
+            work.iloc[evaluation].copy(),
+            bundle,
+            mode=mode,
+        )
+        for position, embedding in zip(
+            evaluation,
+            transformed["embedding"].to_numpy(),
+        ):
+            corrected[int(position)] = embedding
+            fold_assignment[int(position)] = fold
+        bundles.append(bundle)
+    if any(value is None for value in corrected) or np.any(fold_assignment < 0):
+        raise RuntimeError("Cross-fit harmonization did not transform every record")
+    output = work.copy()
+    output["embedding"] = corrected
+    output["harmonization_fold"] = fold_assignment
+    output["harmonization_cross_fitted"] = True
+    output["harmonization_mode"] = mode
+    return output, bundles
+
+
 def embedding_shift_summary(reference: Any, target: Any) -> dict[str, Any]:
     """Summarize featurewise standardized differences between two domains."""
     import numpy as np
@@ -557,9 +635,130 @@ def cross_validated_domain_auc(
         model.fit(matrix[train], label[train])
         probability = model.predict_proba(matrix[test])[:, 1]
         aucs.append(roc_auc_score(label[test], probability))
+    signed_mean = float(np.mean(aucs))
+    # A source classifier with AUC 0.34 retains exactly as much directional
+    # information as one with AUC 0.66 after reversing its labels. Reporting
+    # max(AUC, 1-AUC) prevents inverse separation from being called success.
+    effective_mean = max(signed_mean, 1.0 - signed_mean)
     return {
-        "domain_auc_mean": float(np.mean(aucs)),
+        "domain_auc_mean": effective_mean,
+        "domain_auc_signed_mean": signed_mean,
         "domain_auc_sd": float(np.std(aucs, ddof=1)),
         "n_reference": int(len(reference)),
         "n_target": int(len(target)),
+    }
+
+
+def nested_harmonization_domain_auc(
+    frame: Any,
+    *,
+    mode: str,
+    folds: int = 5,
+    ridge: float = 1e-6,
+    expected_dim: int = 1024,
+    max_per_source: int = 5000,
+    random_state: int = 20260811,
+) -> dict[str, Any]:
+    """Evaluate residual source information on untouched outer-fold records.
+
+    The harmonizer and source classifier are both fitted on development
+    participants. AUC is calculated only on evaluation participants. This is
+    stricter than fitting a correction once and then cross-validating a source
+    classifier over the already-corrected complete dataset.
+    """
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    work = validate_embedding_frame(frame, "Nested domain evaluation", expected_dim)
+    work = work.reset_index(drop=True).copy()
+    cell = work["source"].astype(str) + "|" + work["glaucoma"].astype(str)
+    if int(cell.value_counts().min()) < folds:
+        raise ValueError("Every source-by-glaucoma cell must support all outer folds")
+    splitter = StratifiedKFold(
+        n_splits=folds,
+        shuffle=True,
+        random_state=random_state,
+    )
+    rng = np.random.default_rng(random_state)
+    signed_aucs = []
+    fold_rows = []
+
+    def balanced_glaucoma_sample(frame: Any) -> Any:
+        glaucoma = frame[frame["glaucoma"].astype(int) == 1].copy()
+        groups = []
+        counts = glaucoma["source"].astype(str).value_counts()
+        if set(counts.index) != {"CLSA", "Zeiss"}:
+            raise ValueError("Each domain fold requires CLSA and Zeiss glaucoma")
+        sample_size = min(int(counts.min()), int(max_per_source))
+        for source in ("CLSA", "Zeiss"):
+            group = glaucoma[glaucoma["source"].astype(str) == source]
+            if len(group) > sample_size:
+                positions = rng.choice(len(group), sample_size, replace=False)
+                group = group.iloc[positions]
+            groups.append(group)
+        import pandas as pd
+
+        return pd.concat(groups, ignore_index=True)
+
+    placeholder = np.zeros(len(work), dtype=np.int8)
+    for fold, (development, evaluation) in enumerate(
+        splitter.split(placeholder, cell.to_numpy())
+    ):
+        development_frame = work.iloc[development].copy()
+        evaluation_frame = work.iloc[evaluation].copy()
+        bundle = fit_additive_source_harmonizer(
+            development_frame,
+            ridge=ridge,
+            expected_dim=expected_dim,
+        )
+        development_corrected = apply_source_harmonizer(
+            development_frame,
+            bundle,
+            mode=mode,
+        )
+        evaluation_corrected = apply_source_harmonizer(
+            evaluation_frame,
+            bundle,
+            mode=mode,
+        )
+        train = balanced_glaucoma_sample(development_corrected)
+        test = balanced_glaucoma_sample(evaluation_corrected)
+        x_train = np.stack(train["embedding"].to_numpy()).astype(np.float32)
+        x_test = np.stack(test["embedding"].to_numpy()).astype(np.float32)
+        y_train = (train["source"].astype(str) == "Zeiss").to_numpy(int)
+        y_test = (test["source"].astype(str) == "Zeiss").to_numpy(int)
+        classifier = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(
+                C=0.1,
+                penalty="l2",
+                solver="liblinear",
+                max_iter=2000,
+                random_state=random_state + fold,
+            ),
+        )
+        classifier.fit(x_train, y_train)
+        probability = classifier.predict_proba(x_test)[:, 1]
+        auc = float(roc_auc_score(y_test, probability))
+        signed_aucs.append(auc)
+        fold_rows.append(
+            {
+                "fold": fold,
+                "signed_auc": auc,
+                "effective_auc": max(auc, 1.0 - auc),
+                "n_development": int(len(train)),
+                "n_evaluation": int(len(test)),
+            }
+        )
+    signed_mean = float(np.mean(signed_aucs))
+    return {
+        "domain_auc_mean": max(signed_mean, 1.0 - signed_mean),
+        "domain_auc_signed_mean": signed_mean,
+        "domain_auc_sd": float(np.std(signed_aucs, ddof=1)),
+        "fold_results": fold_rows,
+        "evaluation_design": "outer-fold harmonizer and classifier evaluation",
     }

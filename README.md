@@ -61,6 +61,24 @@ Start with:
   harmonization, held-out domain classification, and raw-versus-harmonized
   Zeiss estimates are explicitly labeled sensitivity analyses because the
   healthy-Zeiss design cell remains absent.
+- [`Age_Glaucoma/07_cross_device_harmonization_validation.py`](Age_Glaucoma/07_cross_device_harmonization_validation.py)
+  reuses notebook 06 participant embeddings to compare raw, cross-fitted
+  location, and cross-fitted location/scale source correction. It adds locked
+  age/sex-matched domain diagnostics, direction-invariant source AUC, nested
+  outer-fold device classification, and prespecified publication acceptance
+  gates. It never reruns RETFound and does not claim to identify nonlinear
+  device translation without paired-device images or healthy Zeiss controls.
+- [`Age_Glaucoma/08_glaucoma_classifier_spatial_validation.py`](Age_Glaucoma/08_glaucoma_classifier_spatial_validation.py)
+  trains a nested participant-held-out linear glaucoma classifier from the
+  completed CLSA RETFound vectors, benchmarks age/sex/visit and image-quality
+  confounding, and exactly decomposes held-out glaucoma logits into retinal
+  patch contributions. Its primary spatial analysis compares independently
+  validated optic-disc/peripapillary regions with equal-area retinal controls
+  and targeted occlusion. The locked CLSA head is also applied to the existing
+  Zeiss image vectors as a positive-cohort transport/localization analysis;
+  without healthy Zeiss controls it does not report cross-device specificity.
+  Bright-disc proxy localization is explicitly exploratory and cannot pass the
+  publication claim-readiness gate.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It

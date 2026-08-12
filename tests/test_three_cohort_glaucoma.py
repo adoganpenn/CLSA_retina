@@ -7,10 +7,14 @@ from src.three_cohort_glaucoma import (
     adjusted_group_effect,
     apply_source_harmonizer,
     canonical_sex,
+    cross_validated_domain_auc,
+    crossfit_source_harmonizer,
     embedding_shift_summary,
     fit_additive_source_harmonizer,
     greedy_match,
+    nested_harmonization_domain_auc,
     paired_outcome_effect,
+    validate_embedding_frame,
 )
 
 
@@ -19,6 +23,22 @@ class ThreeCohortGlaucomaTests(unittest.TestCase):
         self.assertEqual(canonical_sex("Female"), "F")
         self.assertEqual(canonical_sex("1"), "M")
         self.assertEqual(canonical_sex(None), "MISSING")
+
+    def test_embedding_validation_preserves_pre_normalized_sex(self) -> None:
+        frame = pd.DataFrame(
+            {
+                "participant_id": ["p1", "p2"],
+                "age": [60, 61],
+                "sex_normalized": ["F", "M"],
+                "embedding": [np.ones(3), np.ones(3) * 2],
+            }
+        )
+        validated = validate_embedding_frame(frame, "test", expected_dim=3)
+        self.assertEqual(validated["sex_normalized"].tolist(), ["F", "M"])
+
+        frame["sex"] = [None, "Male"]
+        validated = validate_embedding_frame(frame, "test", expected_dim=3)
+        self.assertEqual(validated["sex_normalized"].tolist(), ["F", "M"])
 
     def test_harmonizer_removes_known_source_shift_and_preserves_clsa(self) -> None:
         rng = np.random.default_rng(11)
@@ -96,6 +116,95 @@ class ThreeCohortGlaucomaTests(unittest.TestCase):
         )
         self.assertFalse(
             any(name.startswith("sex=") for name in bundle["design_columns"])
+        )
+
+    def test_crossfit_harmonizer_never_uses_evaluation_records(self) -> None:
+        rng = np.random.default_rng(27)
+        rows = []
+        dimension = 6
+        for source, glaucoma in (("CLSA", 0), ("CLSA", 1), ("Zeiss", 1)):
+            for index in range(24):
+                rows.append(
+                    {
+                        "participant_id": f"{source}_{glaucoma}_{index}",
+                        "age": 60 + rng.normal(0, 5),
+                        "sex_normalized": "F" if index % 2 else "M",
+                        "source": source,
+                        "glaucoma": glaucoma,
+                        "embedding": (
+                            rng.normal(0, 0.2, dimension)
+                            + glaucoma * 0.3
+                            + (source == "Zeiss") * 1.5
+                        ),
+                    }
+                )
+        frame = pd.DataFrame(rows)
+        corrected, bundles = crossfit_source_harmonizer(
+            frame,
+            folds=3,
+            mode="location_scale",
+            expected_dim=dimension,
+        )
+        self.assertEqual(len(bundles), 3)
+        self.assertTrue(corrected["harmonization_cross_fitted"].all())
+        self.assertEqual(set(corrected["harmonization_fold"]), {0, 1, 2})
+        clsa = frame[frame["source"] == "CLSA"].reset_index(drop=True)
+        corrected_clsa = corrected[corrected["source"] == "CLSA"].reset_index(drop=True)
+        np.testing.assert_allclose(
+            np.stack(clsa["embedding"]),
+            np.stack(corrected_clsa["embedding"]),
+            atol=1e-6,
+        )
+
+    def test_domain_auc_is_direction_invariant(self) -> None:
+        rng = np.random.default_rng(44)
+        reference = pd.DataFrame(
+            {"embedding": [row for row in rng.normal(0, 0.2, (80, 4))]}
+        )
+        target = pd.DataFrame(
+            {"embedding": [row for row in rng.normal(2, 0.2, (80, 4))]}
+        )
+        result = cross_validated_domain_auc(
+            reference,
+            target,
+            max_per_domain=100,
+            folds=4,
+        )
+        self.assertGreaterEqual(result["domain_auc_mean"], 0.5)
+        self.assertLessEqual(result["domain_auc_mean"], 1.0)
+        self.assertIn("domain_auc_signed_mean", result)
+
+    def test_nested_domain_auc_uses_outer_evaluation_folds(self) -> None:
+        rng = np.random.default_rng(45)
+        rows = []
+        for source, glaucoma in (("CLSA", 0), ("CLSA", 1), ("Zeiss", 1)):
+            for index in range(30):
+                rows.append(
+                    {
+                        "participant_id": f"{source}_{glaucoma}_{index}",
+                        "age": 62 + rng.normal(0, 4),
+                        "sex_normalized": "F" if index % 2 else "M",
+                        "source": source,
+                        "glaucoma": glaucoma,
+                        "embedding": (
+                            rng.normal(0, 0.3, 5)
+                            + glaucoma * 0.2
+                            + (source == "Zeiss") * 1.0
+                        ),
+                    }
+                )
+        result = nested_harmonization_domain_auc(
+            pd.DataFrame(rows),
+            mode="location_scale",
+            folds=3,
+            expected_dim=5,
+            max_per_source=100,
+        )
+        self.assertEqual(len(result["fold_results"]), 3)
+        self.assertGreaterEqual(result["domain_auc_mean"], 0.5)
+        self.assertEqual(
+            result["evaluation_design"],
+            "outer-fold harmonizer and classifier evaluation",
         )
 
     def test_adjusted_group_effect_recovers_exposure_difference(self) -> None:

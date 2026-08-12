@@ -360,20 +360,20 @@ def load_zeiss_retfound_model(
     return model
 
 
-def exact_patch_map_from_array(
+def exact_linear_patch_map_from_array(
     model: Any,
-    age_model: Mapping[str, Any],
+    coefficients: Any,
+    intercept: float,
     input_array: Any,
     device: str,
     stored_embedding: Any | None = None,
 ) -> dict[str, Any]:
-    """Compute an exact additive linear-age map from a source-specific input."""
+    """Compute an exact additive map for any source-specific linear head."""
     import numpy as np
     import torch
 
     from fundus_retfound_pipeline import (
         _decompose_layer_norm_mean_pool,
-        _effective_linear_head,
     )
 
     array = np.asarray(input_array, dtype=np.float32)
@@ -392,7 +392,13 @@ def exact_patch_map_from_array(
         feature = model.fc_norm(pooled)
     patch_numpy = patch_tokens.squeeze(0).cpu().numpy().astype(np.float64)
     feature_numpy = feature.squeeze(0).cpu().numpy().astype(np.float64)
-    coefficients, intercept = _effective_linear_head(age_model)
+    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(-1)
+    intercept = float(intercept)
+    if coefficients.size != feature_numpy.size:
+        raise ValueError(
+            f"Linear head dimension {coefficients.size} != source feature "
+            f"dimension {feature_numpy.size}"
+        )
     layer_norm = model.fc_norm
     decomposition = _decompose_layer_norm_mean_pool(
         patch_numpy,
@@ -426,6 +432,27 @@ def exact_patch_map_from_array(
         "embedding_cosine": cosine,
         "embedding_max_absolute_difference": maximum_absolute_difference,
     }
+
+
+def exact_patch_map_from_array(
+    model: Any,
+    age_model: Mapping[str, Any],
+    input_array: Any,
+    device: str,
+    stored_embedding: Any | None = None,
+) -> dict[str, Any]:
+    """Backward-compatible source-specific exact map for a linear age head."""
+    from fundus_retfound_pipeline import _effective_linear_head
+
+    coefficients, intercept = _effective_linear_head(age_model)
+    return exact_linear_patch_map_from_array(
+        model=model,
+        coefficients=coefficients,
+        intercept=intercept,
+        input_array=input_array,
+        device=device,
+        stored_embedding=stored_embedding,
+    )
 
 
 def normalize_attribution_map(grid: Any) -> Any:
