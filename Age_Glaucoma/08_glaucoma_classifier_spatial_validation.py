@@ -21,6 +21,10 @@
 # MAGIC research classifier**, not a clinical diagnostic device. Validated
 # MAGIC optic-disc coordinates are required before making an anatomic claim;
 # MAGIC the automatic bright-disc proxy is explicitly exploratory.
+# MAGIC
+# MAGIC The gated Hugging Face token is read from a temporary text widget,
+# MAGIC placed in `HF_TOKEN` only while the RETFound checkpoint loads, and then
+# MAGIC removed from the process environment. Do not print or commit the token.
 
 # COMMAND ----------
 # MAGIC %pip install -q "timm>=1.0,<2" "huggingface_hub>=0.24" "pydicom>=2.4,<4"
@@ -31,6 +35,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import sys
 
 import joblib
@@ -74,7 +79,8 @@ dbutils.widgets.dropdown(
 dbutils.widgets.text("retfound_repo", "")
 dbutils.widgets.text("checkpoint_path", "")
 dbutils.widgets.dropdown("allow_repo_clone", "true", ["true", "false"])
-dbutils.widgets.dropdown("allow_downloads", "false", ["false", "true"])
+dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
+dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 dbutils.widgets.dropdown("device", "auto", ["auto", "cuda", "cpu"])
 dbutils.widgets.text("embedding_cosine_threshold", "0.999")
 
@@ -1070,10 +1076,44 @@ def save_overlay(processed_rgb, grid, masks, record, output_path):
 
 
 if run_explainability_flag:
-    clsa_model, device, resolved_repo, resolved_checkpoint = load_retfound_model(
-        retfound_config
-    )
-    zeiss_model = load_zeiss_retfound_model(resolved_checkpoint, device)
+    temporary_hf_token = dbutils.widgets.get("hf_token").strip()
+    if allow_downloads and not checkpoint_path and not temporary_hf_token:
+        raise ValueError(
+            "Enter the temporary Hugging Face token in the hf_token widget, "
+            "or provide checkpoint_path."
+        )
+    if temporary_hf_token:
+        os.environ["HF_TOKEN"] = temporary_hf_token
+    try:
+        try:
+            clsa_model, device, resolved_repo, resolved_checkpoint = (
+                load_retfound_model(retfound_config)
+            )
+            zeiss_model = load_zeiss_retfound_model(
+                resolved_checkpoint, device
+            )
+        except Exception as error:
+            message = str(error).lower()
+            if any(
+                marker in message
+                for marker in (
+                    "gated repo",
+                    "gatedrepo",
+                    "401 client",
+                    "unauthorized",
+                    "forbidden",
+                )
+            ):
+                raise RuntimeError(
+                    "Hugging Face rejected the RETFound checkpoint request. "
+                    "The hf_token must belong to an account that has accepted "
+                    "access for YukunZhou/RETFound_mae_natureCFP. No token was "
+                    "saved."
+                ) from None
+            raise
+    finally:
+        os.environ.pop("HF_TOKEN", None)
+        temporary_hf_token = ""
     print("Explainability device:", device)
     print("RETFound repository:", resolved_repo)
     print("RETFound checkpoint:", resolved_checkpoint)
@@ -1587,3 +1627,15 @@ summary = {
 write_json(summary, output_root / "GLAUCOMA_SPATIAL_VALIDATION_SUMMARY.json")
 print(json.dumps(summary, indent=2, default=str))
 print("Notebook 08 complete")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 11. Remove temporary credentials
+
+# COMMAND ----------
+os.environ.pop("HF_TOKEN", None)
+try:
+    dbutils.widgets.remove("hf_token")
+except Exception:
+    pass
+print("Temporary Hugging Face token widget removed")

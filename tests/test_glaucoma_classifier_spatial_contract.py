@@ -46,6 +46,12 @@ class GlaucomaClassifierSpatialContractTests(unittest.TestCase):
     def test_notebook_never_programmatically_sets_widgets(self):
         self.assertNotIn("dbutils.widgets.set", self.source)
 
+    def test_hugging_face_token_widget_is_temporary(self):
+        self.assertIn('dbutils.widgets.text("hf_token"', self.source)
+        self.assertIn('os.environ["HF_TOKEN"] = temporary_hf_token', self.source)
+        self.assertIn('os.environ.pop("HF_TOKEN", None)', self.source)
+        self.assertIn('dbutils.widgets.remove("hf_token")', self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
