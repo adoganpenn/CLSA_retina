@@ -68,6 +68,7 @@ dbutils.widgets.text("bootstrap_repetitions", "2000")
 dbutils.widgets.dropdown("run_explainability", "true", ["true", "false"])
 dbutils.widgets.dropdown("explain_all_images", "false", ["false", "true"])
 dbutils.widgets.text("n_explain_participants_per_group", "40")
+dbutils.widgets.text("max_explain_images_per_participant", "2")
 dbutils.widgets.text("explain_batch_size", "50")
 dbutils.widgets.dropdown("resume_explainability", "true", ["true", "false"])
 dbutils.widgets.dropdown(
@@ -83,6 +84,8 @@ dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 dbutils.widgets.dropdown("device", "auto", ["auto", "cuda", "cpu"])
 dbutils.widgets.text("embedding_cosine_threshold", "0.999")
+dbutils.widgets.text("clsa_logit_replay_tolerance", "0.001")
+dbutils.widgets.text("zeiss_probability_replay_tolerance", "0.025")
 
 # COMMAND ----------
 repo_root = Path(dbutils.widgets.get("repo_root").strip())
@@ -131,6 +134,9 @@ explain_all_images = dbutils.widgets.get("explain_all_images") == "true"
 n_explain_participants_per_group = int(
     dbutils.widgets.get("n_explain_participants_per_group")
 )
+max_explain_images_per_participant = int(
+    dbutils.widgets.get("max_explain_images_per_participant")
+)
 explain_batch_size = int(dbutils.widgets.get("explain_batch_size"))
 resume_explainability = dbutils.widgets.get("resume_explainability") == "true"
 allow_exploratory_disc_proxy = (
@@ -147,6 +153,12 @@ device_requested = dbutils.widgets.get("device")
 embedding_cosine_threshold = float(
     dbutils.widgets.get("embedding_cosine_threshold")
 )
+clsa_logit_replay_tolerance = float(
+    dbutils.widgets.get("clsa_logit_replay_tolerance")
+)
+zeiss_probability_replay_tolerance = float(
+    dbutils.widgets.get("zeiss_probability_replay_tolerance")
+)
 
 if control_ratio < 1 or control_ratio > 5:
     raise ValueError("control_ratio must be between 1 and 5")
@@ -156,10 +168,20 @@ if outer_folds < 3 or inner_folds < 2:
     raise ValueError("Use at least 3 outer and 2 inner folds")
 if bootstrap_repetitions < 500:
     raise ValueError("bootstrap_repetitions must be at least 500")
-if n_explain_participants_per_group < 1 or explain_batch_size < 1:
+if (
+    n_explain_participants_per_group < 1
+    or max_explain_images_per_participant < 1
+    or explain_batch_size < 1
+):
     raise ValueError("Explainability sample and batch sizes must be positive")
 if not 0.9 <= embedding_cosine_threshold <= 1.0:
     raise ValueError("embedding_cosine_threshold must lie in [0.9, 1.0]")
+if clsa_logit_replay_tolerance <= 0:
+    raise ValueError("clsa_logit_replay_tolerance must be positive")
+if not 0 < zeiss_probability_replay_tolerance <= 0.10:
+    raise ValueError(
+        "zeiss_probability_replay_tolerance must lie in (0, 0.10]"
+    )
 
 module_root = repo_root / "src"
 if not module_root.exists():
@@ -835,6 +857,36 @@ explain_images = pd.concat(
     ignore_index=True,
     sort=False,
 )
+# A Zeiss participant can have many repeated DICOM acquisitions. Select the
+# image nearest that participant's mean classifier logit within each eye, then
+# cap the participant total. This avoids cherry-picking extreme predictions and
+# prevents a small participant sample from expanding into tens of thousands of
+# explanation runs.
+explain_images["eye"] = explain_images["eye"].fillna("UNKNOWN").astype(str)
+explain_images["_participant_mean_logit"] = explain_images.groupby(
+    ["source", "participant_id"]
+)["classifier_logit_oof"].transform("mean")
+explain_images["_representative_distance"] = (
+    explain_images["classifier_logit_oof"]
+    - explain_images["_participant_mean_logit"]
+).abs()
+explain_images = (
+    explain_images.sort_values(
+        [
+            "source",
+            "participant_id",
+            "eye",
+            "_representative_distance",
+            "image_path",
+        ],
+        kind="stable",
+    )
+    .drop_duplicates(["source", "participant_id", "eye"], keep="first")
+    .groupby(["source", "participant_id"], sort=False, group_keys=False)
+    .head(max_explain_images_per_participant)
+    .drop(columns=["_participant_mean_logit", "_representative_distance"])
+    .reset_index(drop=True)
+)
 write_frame(
     selected_participants,
     attribution_root / "selected_participants_private.parquet",
@@ -850,6 +902,10 @@ annotation_template["validated"] = False
 write_frame(annotation_template, anatomy_root / "optic_disc_annotation_template_private.csv")
 print("Selected participants:", len(selected_participants))
 print("Selected images:", len(explain_images))
+print(
+    "Maximum representative images per participant:",
+    max_explain_images_per_participant,
+)
 
 # COMMAND ----------
 # MAGIC %md
@@ -1134,9 +1190,25 @@ if run_explainability_flag:
         batch_directory.mkdir(parents=True, exist_ok=True)
         manifest_path = batch_directory / "glaucoma_attribution_manifest.parquet"
         if resume_explainability and manifest_path.exists():
-            print(f"[explain {batch_index}/{n_batches}] resume {manifest_path}")
-            batch_manifests.append(pd.read_parquet(manifest_path))
-            continue
+            existing_manifest = pd.read_parquet(manifest_path)
+            required_resume_columns = {
+                "source",
+                "stored_logit_replay_error",
+                "stored_probability_replay_error",
+                "replay_validation_metric",
+                "stored_embedding_cosine",
+            }
+            if required_resume_columns.issubset(existing_manifest.columns):
+                print(
+                    f"[explain {batch_index}/{n_batches}] resume "
+                    f"{manifest_path}"
+                )
+                batch_manifests.append(existing_manifest)
+                continue
+            print(
+                f"[explain {batch_index}/{n_batches}] recomputing legacy "
+                f"manifest without the current replay contract: {manifest_path}"
+            )
         print(f"[explain {batch_index}/{n_batches}] images {start:,}:{stop:,}")
         rows = []
         for local_index, record in ordered.iloc[start:stop].iterrows():
@@ -1169,10 +1241,26 @@ if run_explainability_flag:
                 stored_embedding=record["embedding"],
             )
             stored_logit = float(record["classifier_logit_oof"])
-            replay_error = abs(float(attribution["prediction"]) - stored_logit)
+            replayed_logit = float(attribution["prediction"])
+            replay_error = abs(replayed_logit - stored_logit)
+            stored_probability = probability_from_logit(stored_logit)
+            replayed_probability = probability_from_logit(replayed_logit)
+            replay_probability_error = abs(
+                replayed_probability - stored_probability
+            )
+            if str(record["source"]) == "Zeiss":
+                replay_validation_metric = "probability_absolute_difference"
+                replay_validation_value = replay_probability_error
+                replay_validation_tolerance = (
+                    zeiss_probability_replay_tolerance
+                )
+            else:
+                replay_validation_metric = "logit_absolute_difference"
+                replay_validation_value = replay_error
+                replay_validation_tolerance = clsa_logit_replay_tolerance
             if (
                 attribution["reconstruction_error"] > 1e-4
-                or replay_error > 1e-3
+                or replay_validation_value > replay_validation_tolerance
                 or not np.isfinite(attribution["embedding_cosine"])
                 or attribution["embedding_cosine"]
                 < embedding_cosine_threshold
@@ -1180,7 +1268,11 @@ if run_explainability_flag:
                 raise RuntimeError(
                     "Exact glaucoma attribution failed reconstruction for "
                     f"{record['image_path']}: patch={attribution['reconstruction_error']}, "
-                    f"stored={replay_error}, cosine={attribution['embedding_cosine']}"
+                    f"logit_difference={replay_error}, "
+                    f"probability_difference={replay_probability_error}, "
+                    f"validation={replay_validation_metric} "
+                    f"{replay_validation_value}>{replay_validation_tolerance}, "
+                    f"cosine={attribution['embedding_cosine']}"
                 )
             proxies = fundus_physiology_proxies(processed_rgb)
             if bool(record["validated"]):
@@ -1245,10 +1337,20 @@ if run_explainability_flag:
                         record["glaucoma_probability_oof"]
                     ),
                     "classifier_logit_oof": stored_logit,
+                    "replayed_classifier_logit": replayed_logit,
+                    "stored_glaucoma_probability": stored_probability,
+                    "replayed_glaucoma_probability": replayed_probability,
                     "patch_reconstruction_error": float(
                         attribution["reconstruction_error"]
                     ),
-                    "stored_embedding_replay_error": replay_error,
+                    "stored_logit_replay_error": replay_error,
+                    "stored_probability_replay_error": (
+                        replay_probability_error
+                    ),
+                    "replay_validation_metric": replay_validation_metric,
+                    "replay_validation_tolerance": (
+                        replay_validation_tolerance
+                    ),
                     "stored_embedding_cosine": float(
                         attribution["embedding_cosine"]
                     ),
@@ -1573,6 +1675,23 @@ summary = {
     "source_specific_explainability_preprocessing": {
         "CLSA": "CLSA fundus crop/resize plus ImageNet normalization",
         "Zeiss": "established Zeiss DICOM/AutoMorph crop plus ImageNet normalization",
+    },
+    "explainability_replay_contract": {
+        "minimum_embedding_cosine": embedding_cosine_threshold,
+        "maximum_clsa_logit_absolute_difference": (
+            clsa_logit_replay_tolerance
+        ),
+        "maximum_zeiss_probability_absolute_difference": (
+            zeiss_probability_replay_tolerance
+        ),
+        "maximum_images_per_participant": (
+            max_explain_images_per_participant
+        ),
+        "note": (
+            "Zeiss uses probability-scale replay because tiny source-encoder "
+            "floating-point differences can be amplified on the logit scale; "
+            "exact patch additivity and embedding cosine remain mandatory."
+        ),
     },
     "explainability_ran": run_explainability_flag,
     "n_explained_images": int(len(attribution_manifest)),

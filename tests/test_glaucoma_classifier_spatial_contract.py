@@ -52,6 +52,16 @@ class GlaucomaClassifierSpatialContractTests(unittest.TestCase):
         self.assertIn('os.environ.pop("HF_TOKEN", None)', self.source)
         self.assertIn('dbutils.widgets.remove("hf_token")', self.source)
 
+    def test_source_specific_replay_and_image_caps_are_enforced(self):
+        self.assertIn("zeiss_probability_replay_tolerance", self.source)
+        self.assertIn("clsa_logit_replay_tolerance", self.source)
+        self.assertIn("replay_probability_error", self.source)
+        self.assertIn("max_explain_images_per_participant", self.source)
+        self.assertIn(
+            '.drop_duplicates(["source", "participant_id", "eye"]',
+            self.source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
