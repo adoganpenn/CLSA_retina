@@ -37,6 +37,8 @@ import json
 import math
 import os
 import sys
+import time
+import uuid
 
 import joblib
 import matplotlib.pyplot as plt
@@ -989,6 +991,56 @@ def stable_image_key(image_path):
     return hashlib.sha256(str(image_path).encode("utf-8")).hexdigest()[:20]
 
 
+def publish_local_artifact(local_path, volume_path, retries=4):
+    """Copy a completed local file into a Volume without seek-based writes."""
+    local_path = Path(local_path)
+    volume_path = Path(volume_path)
+    if not local_path.is_file() or local_path.stat().st_size < 1:
+        raise OSError(f"Local artifact is absent or empty: {local_path}")
+    volume_path.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"file:{local_path.resolve()}"
+    expected_bytes = int(local_path.stat().st_size)
+    last_error = None
+    for attempt in range(1, retries + 1):
+        partial_path = volume_path.with_name(
+            f".{volume_path.name}.{uuid.uuid4().hex}.partial"
+        )
+        try:
+            dbutils.fs.cp(source_uri, str(partial_path), False)
+            partial_bytes = int(partial_path.stat().st_size)
+            if partial_bytes != expected_bytes:
+                raise OSError(
+                    "Volume staging copy has the wrong size: "
+                    f"{partial_bytes} != {expected_bytes}"
+                )
+            if volume_path.exists():
+                dbutils.fs.rm(str(volume_path), False)
+            dbutils.fs.mv(str(partial_path), str(volume_path), False)
+            final_bytes = int(volume_path.stat().st_size)
+            if final_bytes != expected_bytes:
+                raise OSError(
+                    "Published Volume artifact has the wrong size: "
+                    f"{final_bytes} != {expected_bytes}"
+                )
+            return volume_path
+        except Exception as error:
+            last_error = error
+            try:
+                dbutils.fs.rm(str(partial_path), False)
+            except Exception:
+                pass
+            if attempt < retries:
+                delay = 2 ** (attempt - 1)
+                print(
+                    f"Volume artifact copy attempt {attempt}/{retries} failed; "
+                    f"retrying in {delay}s: {type(error).__name__}: {error}"
+                )
+                time.sleep(delay)
+    raise OSError(
+        f"Could not publish local artifact to {volume_path} after {retries} attempts"
+    ) from last_error
+
+
 def proxy_disc_coordinates(proxies):
     mask = np.asarray(proxies["optic_disc_proxy"], dtype=bool)
     yy, xx = np.where(mask)
@@ -1176,6 +1228,11 @@ if run_explainability_flag:
 
     batch_root = attribution_root / "batches"
     batch_root.mkdir(parents=True, exist_ok=True)
+    local_artifact_root = Path(
+        f"/local_disk0/tmp/clsa_glaucoma_attribution_{os.getpid()}"
+    )
+    local_artifact_root.mkdir(parents=True, exist_ok=True)
+    print("Local explainability artifact staging:", local_artifact_root)
     ordered = explain_images.sort_values(
         ["classification_group", "participant_id", "image_path"],
         kind="stable",
@@ -1192,13 +1249,45 @@ if run_explainability_flag:
         if resume_explainability and manifest_path.exists():
             existing_manifest = pd.read_parquet(manifest_path)
             required_resume_columns = {
+                "image_key",
                 "source",
                 "stored_logit_replay_error",
                 "stored_probability_replay_error",
                 "replay_validation_metric",
                 "stored_embedding_cosine",
+                "attribution_npz_path",
+                "overlay_path",
             }
+            expected_batch = ordered.iloc[start:stop]
+            if not allow_exploratory_disc_proxy:
+                expected_batch = expected_batch[
+                    expected_batch["validated"].astype(bool)
+                ]
+            expected_keys = {
+                stable_image_key(path)
+                for path in expected_batch["image_path"].astype(str)
+            }
+            manifest_keys_match = (
+                "image_key" in existing_manifest.columns
+                and set(existing_manifest["image_key"].astype(str))
+                == expected_keys
+            )
+            resume_artifacts_valid = False
             if required_resume_columns.issubset(existing_manifest.columns):
+                artifact_paths = [
+                    Path(path)
+                    for column in ("attribution_npz_path", "overlay_path")
+                    for path in existing_manifest[column].dropna().astype(str)
+                ]
+                resume_artifacts_valid = bool(artifact_paths) and all(
+                    path.is_file() and path.stat().st_size > 0
+                    for path in artifact_paths
+                )
+            if (
+                required_resume_columns.issubset(existing_manifest.columns)
+                and manifest_keys_match
+                and resume_artifacts_valid
+            ):
                 print(
                     f"[explain {batch_index}/{n_batches}] resume "
                     f"{manifest_path}"
@@ -1206,8 +1295,8 @@ if run_explainability_flag:
                 batch_manifests.append(existing_manifest)
                 continue
             print(
-                f"[explain {batch_index}/{n_batches}] recomputing legacy "
-                f"manifest without the current replay contract: {manifest_path}"
+                f"[explain {batch_index}/{n_batches}] recomputing incomplete, "
+                f"legacy, or input-mismatched batch: {manifest_path}"
             )
         print(f"[explain {batch_index}/{n_batches}] images {start:,}:{stop:,}")
         rows = []
@@ -1310,18 +1399,42 @@ if run_explainability_flag:
                 random_state=20260811 + int(local_index),
             )
             key = stable_image_key(record["image_path"])
+            local_npz_path = (
+                local_artifact_root
+                / f"{key}_exact_glaucoma_attribution.npz"
+            )
             np.savez_compressed(
-                batch_directory / f"{key}_exact_glaucoma_attribution.npz",
+                local_npz_path,
                 grid=attribution["grid"],
                 variable_grid=attribution["variable_grid"],
+            )
+            with np.load(local_npz_path) as saved_attribution:
+                if not {"grid", "variable_grid"}.issubset(
+                    saved_attribution.files
+                ):
+                    raise OSError(
+                        f"Locally staged attribution NPZ is invalid: {local_npz_path}"
+                    )
+            published_npz_path = publish_local_artifact(
+                local_npz_path,
+                batch_directory / local_npz_path.name,
+            )
+            local_overlay_path = (
+                local_artifact_root / f"{key}_glaucoma_overlay.png"
             )
             save_overlay(
                 processed_rgb,
                 attribution["variable_grid"],
                 masks,
                 record,
-                batch_directory / f"{key}_glaucoma_overlay.png",
+                local_overlay_path,
             )
+            published_overlay_path = publish_local_artifact(
+                local_overlay_path,
+                batch_directory / local_overlay_path.name,
+            )
+            local_npz_path.unlink(missing_ok=True)
+            local_overlay_path.unlink(missing_ok=True)
             rows.append(
                 {
                     "image_key": key,
@@ -1333,6 +1446,8 @@ if run_explainability_flag:
                     "glaucoma_label": int(record["glaucoma_label"]),
                     "fold": int(record["fold"]),
                     "classification_group": record["classification_group"],
+                    "attribution_npz_path": str(published_npz_path),
+                    "overlay_path": str(published_overlay_path),
                     "glaucoma_probability_oof": float(
                         record["glaucoma_probability_oof"]
                     ),

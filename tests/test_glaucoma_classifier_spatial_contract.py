@@ -62,6 +62,15 @@ class GlaucomaClassifierSpatialContractTests(unittest.TestCase):
             self.source,
         )
 
+    def test_binary_artifacts_are_staged_locally_before_volume_publish(self):
+        self.assertIn("def publish_local_artifact", self.source)
+        self.assertIn('f"file:{local_path.resolve()}"', self.source)
+        self.assertIn("dbutils.fs.cp(source_uri", self.source)
+        self.assertIn("local_npz_path", self.source)
+        self.assertIn("published_npz_path", self.source)
+        self.assertIn("attribution_npz_path", self.source)
+        self.assertIn("resume_artifacts_valid", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
