@@ -79,6 +79,16 @@ Start with:
   without healthy Zeiss controls it does not report cross-device specificity.
   Bright-disc proxy localization is explicitly exploratory and cannot pass the
   publication claim-readiness gate.
+- [`Age_Glaucoma/09_clsa_anatomic_explainability.py`](Age_Glaucoma/09_clsa_anatomic_explainability.py)
+  restricts the next-stage anatomy analysis to CLSA glaucoma-only versus CLSA
+  healthy participants and reuses notebook 08's participant-held-out exact
+  contribution maps. It pins Berens Lab's MIT-licensed Fundus Image Toolbox,
+  segments retinal vessels with the FIVES-trained FR-U-Net ensemble, localizes
+  optic-disc and foveal centers, and quantifies attribution in optic-disc,
+  peripapillary, foveal, and vessel regions. Optic-disc and foveal outputs are
+  explicitly treated as localized circular ROIs rather than segmentations.
+  Participant-level max-|T| permutation inference controls multiplicity, and
+  optional targeted occlusion provides a slower confirmatory analysis.
 
 Run `correlation.py` after notebooks 02 and 03 have produced the full RETFound
 embedding table, retinal-age predictions, and `sap_questionnaire_visit`. It
