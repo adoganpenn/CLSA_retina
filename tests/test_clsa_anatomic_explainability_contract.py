@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "Age_Glaucoma" / "09_clsa_anatomic_explainability.py"
+NOTEBOOK = ROOT / "Age_Glaucoma" / "09_clsa_anatomic_explainability_source.py"
 
 
 class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):

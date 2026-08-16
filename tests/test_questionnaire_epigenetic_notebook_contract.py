@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOK = ROOT / "Age_Glaucoma" / "10_questionnaire_epigenetic_aging.py"
+NOTEBOOK = ROOT / "Age_Glaucoma" / "10_questionnaire_epigenetic_aging_source.py"
 
 
 class QuestionnaireEpigeneticNotebookContractTests(unittest.TestCase):

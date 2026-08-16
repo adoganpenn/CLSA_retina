@@ -84,7 +84,7 @@ Start with:
   without healthy Zeiss controls it does not report cross-device specificity.
   Bright-disc proxy localization is explicitly exploratory and cannot pass the
   publication claim-readiness gate.
-- [`Age_Glaucoma/09_clsa_anatomic_explainability.py`](Age_Glaucoma/09_clsa_anatomic_explainability.py)
+- [`Age_Glaucoma/09_clsa_anatomic_explainability.ipynb`](Age_Glaucoma/09_clsa_anatomic_explainability.ipynb)
   restricts the next-stage anatomy analysis to CLSA glaucoma-only versus CLSA
   healthy participants and reuses notebook 08's participant-held-out exact
   contribution maps. It pins Berens Lab's MIT-licensed Fundus Image Toolbox,
