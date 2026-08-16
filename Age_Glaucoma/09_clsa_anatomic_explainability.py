@@ -21,7 +21,16 @@
 # MAGIC `d7757e28fbf639856b53cfe00019f605af8c1f17` for reproducibility.
 
 # COMMAND ----------
-# MAGIC %pip install -q "git+https://github.com/berenslab/fundus_image_toolbox.git@d7757e28fbf639856b53cfe00019f605af8c1f17" "huggingface_hub>=0.24"
+# MAGIC %pip install -q "numpy>=2.0,<2.3" "git+https://github.com/berenslab/fundus_image_toolbox.git@d7757e28fbf639856b53cfe00019f605af8c1f17" "huggingface_hub>=0.24"
+
+# COMMAND ----------
+# MAGIC %pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless
+
+# COMMAND ----------
+# MAGIC %pip install -q --no-deps "opencv-python-headless==4.11.0.86"
+
+# COMMAND ----------
+dbutils.library.restartPython()
 
 # COMMAND ----------
 from pathlib import Path
@@ -31,7 +40,10 @@ import json
 import math
 import os
 import sys
+import time
+import uuid
 
+import cv2
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,6 +51,14 @@ import pandas as pd
 import torch
 from PIL import Image
 from scipy import ndimage
+
+cv2.setNumThreads(1)
+print("OpenCV headless smoke test:", cv2.__version__)
+if cv2.__version__ != "4.11.0":
+    raise RuntimeError(
+        "Expected the Databricks-safe OpenCV 4.11.0 build, but imported "
+        f"{cv2.__version__}. Restart Python and rerun from the top."
+    )
 
 # COMMAND ----------
 dbutils.widgets.text(
@@ -283,13 +303,27 @@ display(
 # MAGIC the governed `fit_cache_dir`. No participant image is sent externally.
 
 # COMMAND ----------
+model_load_started = time.perf_counter()
+print("[models 1/2] loading fovea/optic-disc localization model...", flush=True)
 landmark_model, landmark_checkpoint = fit.load_fovea_od_model(
     device=device,
     cache_dir=str(fit_cache_dir),
 )
+print(
+    "[models 1/2] localization model ready in "
+    f"{time.perf_counter() - model_load_started:.1f}s",
+    flush=True,
+)
+model_load_started = time.perf_counter()
+print("[models 2/2] loading vessel-segmentation ensemble...", flush=True)
 vessel_ensemble = fit.load_segmentation_ensemble(
     device=device,
     cache_dir=str(fit_cache_dir),
+)
+print(
+    "[models 2/2] vessel ensemble ready in "
+    f"{time.perf_counter() - model_load_started:.1f}s",
+    flush=True,
 )
 print("Fovea/optic-disc checkpoint:", landmark_checkpoint)
 print("Vessel ensemble models:", len(vessel_ensemble))
@@ -386,6 +420,11 @@ for path in (
     figure_root,
 ):
     path.mkdir(parents=True, exist_ok=True)
+local_artifact_root = Path(
+    f"/local_disk0/tmp/clsa_anatomic_explainability_{os.getpid()}"
+)
+local_artifact_root.mkdir(parents=True, exist_ok=True)
+print("Local anatomy artifact staging:", local_artifact_root)
 
 
 def resize_mask(mask, shape):
@@ -396,6 +435,45 @@ def resize_mask(mask, shape):
 
 def stable_key(value):
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:20]
+
+
+def publish_local_artifact(local_path, volume_path, retries=4):
+    """Publish a completed local artifact without seek-writing to a Volume."""
+    local_path = Path(local_path)
+    volume_path = Path(volume_path)
+    if not local_path.is_file() or local_path.stat().st_size < 1:
+        raise OSError(f"Local artifact is absent or empty: {local_path}")
+    volume_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_bytes = int(local_path.stat().st_size)
+    source_uri = f"file:{local_path.resolve()}"
+    last_error = None
+    for attempt in range(1, retries + 1):
+        partial_path = volume_path.with_name(
+            f".{volume_path.name}.{uuid.uuid4().hex}.partial"
+        )
+        try:
+            dbutils.fs.cp(source_uri, str(partial_path), False)
+            if int(partial_path.stat().st_size) != expected_bytes:
+                raise OSError("Incomplete temporary Volume artifact copy")
+            if volume_path.exists():
+                dbutils.fs.rm(str(volume_path), False)
+            dbutils.fs.mv(str(partial_path), str(volume_path), False)
+            return volume_path
+        except Exception as error:
+            last_error = error
+            try:
+                dbutils.fs.rm(str(partial_path), False)
+            except Exception:
+                pass
+            if attempt < retries:
+                delay = 2 ** (attempt - 1)
+                print(
+                    f"Artifact publish {attempt}/{retries} failed; retrying "
+                    f"in {delay}s: {type(error).__name__}: {error}",
+                    flush=True,
+                )
+                time.sleep(delay)
+    raise OSError(f"Could not publish artifact: {volume_path}") from last_error
 
 
 def sigmoid(value):
@@ -536,6 +614,13 @@ def save_overlay(rgb, attribution_grid, masks, label, output_path):
 ordered = clsa_images.reset_index(drop=True)
 batch_manifests = []
 n_batches = math.ceil(len(ordered) / segmentation_batch_size)
+completed_images = 0
+pipeline_started = time.perf_counter()
+print(
+    f"Anatomy plan: {len(ordered):,} images in {n_batches:,} durable batches "
+    f"of at most {segmentation_batch_size}",
+    flush=True,
+)
 for batch_index, start in enumerate(
     range(0, len(ordered), segmentation_batch_size), start=1
 ):
@@ -547,6 +632,9 @@ for batch_index, start in enumerate(
     if resume_segmentation and manifest_path.exists():
         existing = pd.read_parquet(manifest_path)
         required_resume = {
+            "image_key",
+            "mask_path",
+            "overlay_path",
             "fit_source_commit",
             "anatomy_valid",
             "vessels_positive_enrichment",
@@ -562,21 +650,55 @@ for batch_index, start in enumerate(
             and set(existing["image_key"].astype(str))
             == set(batch["image_key"].astype(str))
         )
+        artifact_paths = []
+        if {"mask_path", "overlay_path"}.issubset(existing.columns):
+            artifact_paths = [
+                Path(value)
+                for column in ("mask_path", "overlay_path")
+                for value in existing[column].dropna().astype(str)
+            ]
+        artifacts_ready = bool(artifact_paths) and all(
+            path.is_file() and path.stat().st_size > 0
+            for path in artifact_paths
+        )
         if (
             required_resume.issubset(existing.columns)
             and occlusion_ready
             and input_matches
+            and artifacts_ready
         ):
-            print(f"[anatomy {batch_index}/{n_batches}] resume {manifest_path}")
+            completed_images += len(existing)
+            print(
+                f"[anatomy {batch_index}/{n_batches}] resumed "
+                f"{len(existing)} rows; progress={completed_images:,}/"
+                f"{len(ordered):,}",
+                flush=True,
+            )
             batch_manifests.append(existing)
             continue
-    print(f"[anatomy {batch_index}/{n_batches}] images {start:,}:{stop:,}")
+    batch_started = time.perf_counter()
+    print(
+        f"[anatomy {batch_index}/{n_batches}] images {start:,}:{stop:,} | "
+        "stage=preprocess",
+        flush=True,
+    )
     processed_images = []
     for record in batch.itertuples():
         processed = preprocess_fundus(record.image_path, quality_config)
         processed_images.append(np.asarray(processed.image.convert("RGB")))
+    stage_started = time.perf_counter()
+    print(
+        f"[anatomy {batch_index}/{n_batches}] stage=landmarks",
+        flush=True,
+    )
     coordinates = landmark_model.predict(processed_images)
     coordinates = np.asarray(coordinates, dtype=float).reshape(-1, 4)
+    print(
+        f"[anatomy {batch_index}/{n_batches}] landmarks complete in "
+        f"{time.perf_counter() - stage_started:.1f}s | stage=vessels",
+        flush=True,
+    )
+    stage_started = time.perf_counter()
     vessel_predictions = fit.ensemble_predict_segmentation(
         vessel_ensemble,
         processed_images,
@@ -587,6 +709,11 @@ for batch_index, start in enumerate(
     vessel_predictions = np.asarray(vessel_predictions, dtype=float)
     if vessel_predictions.ndim == 2:
         vessel_predictions = vessel_predictions[None, ...]
+    print(
+        f"[anatomy {batch_index}/{n_batches}] vessels complete in "
+        f"{time.perf_counter() - stage_started:.1f}s | stage=artifacts",
+        flush=True,
+    )
     rows = []
     for local_position, (_, record) in enumerate(batch.iterrows()):
         rgb = processed_images[local_position]
@@ -619,18 +746,27 @@ for batch_index, start in enumerate(
         )
         key = stable_key(record["image_path"])
         mask_path = mask_root / f"{key}_anatomic_masks.npz"
+        local_mask_path = local_artifact_root / mask_path.name
         np.savez_compressed(
-            mask_path,
+            local_mask_path,
             **{name: value.astype(np.uint8) for name, value in masks.items()},
         )
+        with np.load(local_mask_path) as saved_masks:
+            if set(masks) != set(saved_masks.files):
+                raise OSError(f"Staged anatomy mask archive is invalid: {local_mask_path}")
+        publish_local_artifact(local_mask_path, mask_path)
         overlay_path = overlay_root / f"{key}_anatomic_overlay.png"
+        local_overlay_path = local_artifact_root / overlay_path.name
         save_overlay(
             rgb,
             attribution_grid,
             masks,
             record["glaucoma_label"],
-            overlay_path,
+            local_overlay_path,
         )
+        publish_local_artifact(local_overlay_path, overlay_path)
+        local_mask_path.unlink(missing_ok=True)
+        local_overlay_path.unlink(missing_ok=True)
         occlusion = (
             occlusion_metrics(record, masks, proxies["retina"])
             if run_targeted_occlusion and anatomy_metadata["anatomy_valid"]
@@ -655,13 +791,34 @@ for batch_index, start in enumerate(
                 **occlusion,
             }
         )
+        print(
+            f"[anatomy {batch_index}/{n_batches}] artifact "
+            f"{local_position + 1}/{len(batch)} ready; "
+            f"anatomy_valid={anatomy_metadata['anatomy_valid']}",
+            flush=True,
+        )
     batch_manifest = pd.DataFrame(rows)
-    write_frame(batch_manifest, manifest_path)
+    local_manifest_path = (
+        local_artifact_root
+        / f"batch_{start:07d}_{stop:07d}_anatomic_explainability.parquet"
+    )
+    write_frame(batch_manifest, local_manifest_path)
+    publish_local_artifact(local_manifest_path, manifest_path)
+    local_manifest_path.unlink(missing_ok=True)
     batch_manifests.append(batch_manifest)
+    completed_images += len(batch_manifest)
     print(
         f"[anatomy {batch_index}/{n_batches}] saved {len(batch_manifest)} rows; "
-        f"valid={int(batch_manifest['anatomy_valid'].sum())}"
+        f"valid={int(batch_manifest['anatomy_valid'].sum())}; "
+        f"progress={completed_images:,}/{len(ordered):,}; "
+        f"batch_seconds={time.perf_counter() - batch_started:.1f}",
+        flush=True,
     )
+
+print(
+    f"Anatomy batches complete in {(time.perf_counter() - pipeline_started) / 60:.1f} min",
+    flush=True,
+)
 
 image_anatomy = pd.concat(batch_manifests, ignore_index=True)
 write_frame(

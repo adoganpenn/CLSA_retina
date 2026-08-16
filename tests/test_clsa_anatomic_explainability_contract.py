@@ -19,6 +19,28 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
         self.assertIn("fit.load_segmentation_ensemble", self.source)
         self.assertIn("fit.ensemble_predict_segmentation", self.source)
 
+    def test_databricks_uses_one_pinned_headless_opencv(self):
+        self.assertIn("%pip uninstall -y opencv-python", self.source)
+        self.assertIn('opencv-python-headless==4.11.0.86', self.source)
+        self.assertIn("dbutils.library.restartPython()", self.source)
+        self.assertIn("OpenCV headless smoke test", self.source)
+
+    def test_anatomy_batches_report_stage_and_durable_progress(self):
+        self.assertIn("Anatomy plan:", self.source)
+        self.assertIn("stage=landmarks", self.source)
+        self.assertIn("stage=vessels", self.source)
+        self.assertIn("stage=artifacts", self.source)
+        self.assertIn("progress={completed_images:,}", self.source)
+        self.assertIn("write_frame(batch_manifest, local_manifest_path)", self.source)
+        self.assertIn(
+            "publish_local_artifact(local_manifest_path, manifest_path)",
+            self.source,
+        )
+        self.assertIn("def publish_local_artifact", self.source)
+        self.assertIn("local_mask_path", self.source)
+        self.assertIn("local_overlay_path", self.source)
+        self.assertIn("artifacts_ready", self.source)
+
     def test_scope_is_clsa_only(self):
         self.assertIn('attribution_manifest["source"].astype(str) == "CLSA"', self.source)
         self.assertIn('"scope": "CLSA only; Zeiss excluded"', self.source)
