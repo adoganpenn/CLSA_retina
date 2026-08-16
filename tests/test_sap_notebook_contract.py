@@ -41,6 +41,50 @@ class SapNotebookContractTests(unittest.TestCase):
             metadata["BL"]["epigenetic_hannum"],
             "Hannum_Age_COM",
         )
+        expected_epigenetic_sources = {
+            "epigenetic_dnam_age": "DNAmAge_COM",
+            "epigenetic_age_acceleration_difference": (
+                "AgeAccelerationDifference_COM"
+            ),
+            "epigenetic_age_acceleration_residual": (
+                "AgeAccelerationResidual_COM"
+            ),
+            "epigenetic_ieaa": "IEAA_COM",
+            "epigenetic_eeaa": "EEAA_COM",
+            "epigenetic_hannum_age": "Hannum_Age_COM",
+        }
+        epigenetic_variables = literal_assignment(
+            self.tree,
+            "EPIGENETIC_BASELINE_VARIABLES",
+        )
+        self.assertEqual(
+            {
+                name: specification["source_column"]
+                for name, specification in epigenetic_variables.items()
+            },
+            expected_epigenetic_sources,
+        )
+
+    def test_epigenetic_pipeline_has_provenance_qc_and_fundus_linkage(self) -> None:
+        for output_name in (
+            "sap_epigenetic_variable_dictionary",
+            "sap_epigenetic_baseline",
+            "sap_epigenetic_baseline_qc",
+            "sap_epigenetic_formula_qc",
+            "sap_fundus_epigenetic_linkage_audit",
+            "sap_fundus_epigenetic_analysis",
+        ):
+            self.assertIn(output_name, self.source)
+        self.assertIn(
+            "epigenetic_age_acceleration_difference_recomputed",
+            self.source,
+        )
+        self.assertIn(
+            "epigenetic_difference_release_minus_recomputed",
+            self.source,
+        )
+        self.assertIn("CLSA_NUMERIC_MISSING_CODES", self.source)
+        self.assertIn("no raw DNA files are required", self.source)
 
     def test_image_link_is_participant_and_visit_specific(self) -> None:
         self.assertIn(

@@ -5,7 +5,9 @@
 # MAGIC This notebook extracts only the required baseline and Follow-up 1
 # MAGIC questionnaire CSV members, standardizes the SAP variables, derives the
 # MAGIC prespecified measures, and links them to fundus images by participant
-# MAGIC **and visit**.
+# MAGIC **and visit**. The six released baseline methylation-clock outputs are
+# MAGIC parsed directly from the baseline phenotype CSV; no BGEN, CpG-level, or
+# MAGIC other raw DNA file is needed for these derived measures.
 # MAGIC
 # MAGIC Age linkage is deliberately visit-specific:
 # MAGIC
@@ -112,6 +114,60 @@ QUESTIONNAIRE_SOURCES = {
             "2209017_UOttawa_EFreeman_FUP1/"
             "2209017_UOttawa_EFreeman_ParticipantStatus_CoP_v3_Sep2022.csv"
         ),
+    },
+}
+
+CLSA_NUMERIC_MISSING_CODES = (
+    "-8",
+    "-77771",
+    "-77772",
+    "-88880",
+    "-88888",
+    "-99991",
+    "-99993",
+    "-99999",
+)
+
+EPIGENETIC_BASELINE_VARIABLES = {
+    "epigenetic_dnam_age": {
+        "source_column": "DNAmAge_COM",
+        "definition": (
+            "Horvath 353-CpG pan-tissue DNA methylation age in biological years"
+        ),
+        "role": "clock_age",
+    },
+    "epigenetic_age_acceleration_difference": {
+        "source_column": "AgeAccelerationDifference_COM",
+        "definition": (
+            "Released signed difference DNAmAge minus chronological age"
+        ),
+        "role": "age_acceleration",
+    },
+    "epigenetic_age_acceleration_residual": {
+        "source_column": "AgeAccelerationResidual_COM",
+        "definition": (
+            "Residual from regressing DNAmAge on chronological age"
+        ),
+        "role": "age_acceleration_primary",
+    },
+    "epigenetic_ieaa": {
+        "source_column": "IEAA_COM",
+        "definition": (
+            "Intrinsic epigenetic age acceleration independent of blood-cell composition"
+        ),
+        "role": "age_acceleration_intrinsic",
+    },
+    "epigenetic_eeaa": {
+        "source_column": "EEAA_COM",
+        "definition": (
+            "Extrinsic epigenetic age acceleration incorporating blood-cell composition"
+        ),
+        "role": "age_acceleration_extrinsic",
+    },
+    "epigenetic_hannum_age": {
+        "source_column": "Hannum_Age_COM",
+        "definition": "Hannum 71-CpG epigenetic age in biological years",
+        "role": "clock_age",
     },
 }
 
@@ -370,6 +426,14 @@ VISIT_METADATA = {
         "provincial_weight": "WGHTS_PROV_COM",
         "epigenetic_indicator": "ADM_EPIGEN2_COM",
         "epigenetic_dnam": "DNAmAge_COM",
+        "epigenetic_age_acceleration_difference": (
+            "AgeAccelerationDifference_COM"
+        ),
+        "epigenetic_age_acceleration_residual": (
+            "AgeAccelerationResidual_COM"
+        ),
+        "epigenetic_ieaa": "IEAA_COM",
+        "epigenetic_eeaa": "EEAA_COM",
         "epigenetic_hannum": "Hannum_Age_COM",
     },
     "F1": {
@@ -397,6 +461,15 @@ def assert_unique(df, columns, label: str) -> None:
         raise ValueError(f"{label} is not unique on {columns}.")
 
 
+def parse_clsa_numeric(column_name: str):
+    """Parse a released numeric field without treating sentinel codes as data."""
+    escaped = column_name.replace("`", "``")
+    return F.when(
+        F.trim(F.col(column_name)).isin(*CLSA_NUMERIC_MISSING_CODES),
+        F.lit(None).cast("double"),
+    ).otherwise(F.expr(f"try_cast(`{escaped}` as double)"))
+
+
 def project_visit(df, visit: str, source_map: dict[str, str]):
     metadata = VISIT_METADATA[visit]
     required = [
@@ -410,6 +483,10 @@ def project_visit(df, visit: str, source_map: dict[str, str]):
     for optional_name in (
         "epigenetic_indicator",
         "epigenetic_dnam",
+        "epigenetic_age_acceleration_difference",
+        "epigenetic_age_acceleration_residual",
+        "epigenetic_ieaa",
+        "epigenetic_eeaa",
         "epigenetic_hannum",
     ):
         if optional_name in metadata:
@@ -454,6 +531,18 @@ def project_visit(df, visit: str, source_map: dict[str, str]):
             ),
             optional_source("epigenetic_dnam").alias(
                 "epigenetic_dnam_age_raw"
+            ),
+            optional_source(
+                "epigenetic_age_acceleration_difference"
+            ).alias("epigenetic_age_acceleration_difference_raw"),
+            optional_source(
+                "epigenetic_age_acceleration_residual"
+            ).alias("epigenetic_age_acceleration_residual_raw"),
+            optional_source("epigenetic_ieaa").alias(
+                "epigenetic_ieaa_raw"
+            ),
+            optional_source("epigenetic_eeaa").alias(
+                "epigenetic_eeaa_raw"
             ),
             optional_source("epigenetic_hannum").alias(
                 "epigenetic_hannum_age_raw"
@@ -661,6 +750,12 @@ questionnaire_visit = derive_retinal_metrics(
     require_both_eyes_for_better_eye=True,
 )
 
+for analysis_name in EPIGENETIC_BASELINE_VARIABLES:
+    questionnaire_visit = questionnaire_visit.withColumn(
+        analysis_name,
+        parse_clsa_numeric(f"{analysis_name}_raw"),
+    )
+
 questionnaire_visit = (
     questionnaire_visit
     .withColumn(
@@ -678,43 +773,16 @@ questionnaire_visit = (
         ),
     )
     .withColumn(
-        "epigenetic_dnam_age",
-        F.when(
-            F.trim(F.col("epigenetic_dnam_age_raw")).isin(
-                "-8",
-                "-77771",
-                "-77772",
-                "-88880",
-                "-88888",
-                "-99991",
-                "-99993",
-                "-99999",
-            ),
-            F.lit(None).cast("double"),
-        ).otherwise(F.expr("try_cast(epigenetic_dnam_age_raw as double)")),
-    )
-    .withColumn(
-        "epigenetic_hannum_age",
-        F.when(
-            F.trim(F.col("epigenetic_hannum_age_raw")).isin(
-                "-8",
-                "-77771",
-                "-77772",
-                "-88880",
-                "-88888",
-                "-99991",
-                "-99993",
-                "-99999",
-            ),
-            F.lit(None).cast("double"),
-        ).otherwise(F.expr("try_cast(epigenetic_hannum_age_raw as double)")),
-    )
-    .withColumn(
         "epigenetic_age_status",
         F.when(
-            F.col("epigenetic_dnam_age").isNotNull()
-            | F.col("epigenetic_hannum_age").isNotNull(),
-            F.lit("available_baseline_clock_outputs; clock must be specified"),
+            F.greatest(
+                *[
+                    F.col(name).isNotNull().cast("int")
+                    for name in EPIGENETIC_BASELINE_VARIABLES
+                ]
+            )
+            == 1,
+            F.lit("available_baseline_derived_methylation_output"),
         ).otherwise(F.lit("not_available_at_this_visit")),
     )
     .withColumn(
@@ -761,6 +829,73 @@ questionnaire_visit = (
     )
 )
 
+epigenetic_available_count = F.lit(0)
+for analysis_name in EPIGENETIC_BASELINE_VARIABLES:
+    epigenetic_available_count = epigenetic_available_count + F.col(
+        analysis_name
+    ).isNotNull().cast("int")
+
+questionnaire_visit = (
+    questionnaire_visit
+    .withColumn(
+        "epigenetic_measures_available_count",
+        epigenetic_available_count,
+    )
+    .withColumn(
+        "epigenetic_complete_six_measure_panel",
+        (F.col("epigenetic_measures_available_count") == 6).cast("int"),
+    )
+    .withColumn(
+        "epigenetic_age_acceleration_difference_recomputed",
+        F.col("epigenetic_dnam_age") - F.col("age_at_fundus_years"),
+    )
+    .withColumn(
+        "epigenetic_difference_release_minus_recomputed",
+        F.col("epigenetic_age_acceleration_difference")
+        - F.col("epigenetic_age_acceleration_difference_recomputed"),
+    )
+    .withColumn(
+        "epigenetic_difference_qc_status",
+        F.when(F.col("visit") != "BL", F.lit("not_measured_at_visit"))
+        .when(
+            F.col("epigenetic_age_acceleration_difference").isNull(),
+            F.lit("released_difference_missing"),
+        )
+        .when(
+            F.col("epigenetic_dnam_age").isNull()
+            | F.col("age_at_fundus_years").isNull(),
+            F.lit("components_missing"),
+        )
+        .when(
+            F.abs(F.col("epigenetic_difference_release_minus_recomputed"))
+            <= 1.0,
+            F.lit("consistent_with_released_age_precision"),
+        )
+        .otherwise(F.lit("review_difference_definition_or_age_precision")),
+    )
+    .withColumn(
+        "epigenetic_clock_range_qc_status",
+        F.when(F.col("visit") != "BL", F.lit("not_measured_at_visit"))
+        .when(
+            F.col("epigenetic_dnam_age").isNull()
+            & F.col("epigenetic_hannum_age").isNull(),
+            F.lit("clock_ages_missing"),
+        )
+        .when(
+            (
+                F.col("epigenetic_dnam_age").isNull()
+                | F.col("epigenetic_dnam_age").between(0.0, 120.0)
+            )
+            & (
+                F.col("epigenetic_hannum_age").isNull()
+                | F.col("epigenetic_hannum_age").between(0.0, 120.0)
+            ),
+            F.lit("within_prespecified_review_range"),
+        )
+        .otherwise(F.lit("review_clock_age_outside_0_to_120")),
+    )
+)
+
 # Preserve selected baseline-only context for F1 without pretending it was
 # re-measured at F1.
 baseline_context = questionnaire_visit.filter(F.col("visit") == "BL").select(
@@ -771,9 +906,15 @@ baseline_context = questionnaire_visit.filter(F.col("visit") == "BL").select(
     ),
     F.col("analytic_weight").alias("baseline_analytic_weight"),
     F.col("sampling_strata").alias("baseline_sampling_strata"),
-    F.col("epigenetic_dnam_age").alias("baseline_epigenetic_dnam_age"),
-    F.col("epigenetic_hannum_age").alias(
-        "baseline_epigenetic_hannum_age"
+    *[
+        F.col(name).alias(f"baseline_{name}")
+        for name in EPIGENETIC_BASELINE_VARIABLES
+    ],
+    F.col("epigenetic_measures_available_count").alias(
+        "baseline_epigenetic_measures_available_count"
+    ),
+    F.col("epigenetic_complete_six_measure_panel").alias(
+        "baseline_epigenetic_complete_six_measure_panel"
     ),
 )
 questionnaire_visit = questionnaire_visit.join(
@@ -790,7 +931,166 @@ write_delta(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 6. Link images to the matching visit age
+# MAGIC ## 6. Baseline derived epigenetic-age phenotype
+# MAGIC
+# MAGIC These are released participant-level derivatives in the baseline CSV,
+# MAGIC not values reconstructed from raw methylation or genomic files. The
+# MAGIC released acceleration-difference field is preserved. A separately named
+# MAGIC `DNAmAge - released age` value is calculated only for quality control;
+# MAGIC disagreement can reflect the precision of the released chronological age.
+
+# COMMAND ----------
+epigenetic_source_member = QUESTIONNAIRE_SOURCES["BL"]["member_path"]
+epigenetic_definition_rows = []
+for analysis_name, specification in EPIGENETIC_BASELINE_VARIABLES.items():
+    epigenetic_definition_rows.append(
+        {
+            "analysis_name": analysis_name,
+            "source_column": specification["source_column"],
+            "definition": specification["definition"],
+            "role": specification["role"],
+            "measurement_visit": "BL",
+            "source_member": epigenetic_source_member,
+            "unit": (
+                "biological years"
+                if specification["role"] == "clock_age"
+                else "years or residual-scale years as released"
+            ),
+            "primary_analysis_note": (
+                "prespecified universal acceleration measure"
+                if analysis_name
+                == "epigenetic_age_acceleration_residual"
+                else "secondary or clock-specific measure"
+            ),
+        }
+    )
+
+epigenetic_dictionary_schema = (
+    "analysis_name string, source_column string, definition string, role string, "
+    "measurement_visit string, source_member string, unit string, "
+    "primary_analysis_note string"
+)
+epigenetic_variable_dictionary = spark.createDataFrame(
+    epigenetic_definition_rows,
+    schema=epigenetic_dictionary_schema,
+)
+write_delta(
+    epigenetic_variable_dictionary,
+    f"{output_root}/sap_epigenetic_variable_dictionary",
+)
+
+epigenetic_baseline = (
+    questionnaire_visit
+    .filter(F.col("visit") == "BL")
+    .select(
+        "participant_id",
+        F.lit("BL").alias("measurement_visit"),
+        F.lit(epigenetic_source_member).alias("source_member"),
+        F.col("age_at_fundus_years").alias(
+            "chronological_age_at_baseline"
+        ),
+        "age_source_variable",
+        "epigenetic_data_indicator_raw",
+        *[
+            column
+            for analysis_name in EPIGENETIC_BASELINE_VARIABLES
+            for column in (
+                F.col(f"{analysis_name}_raw"),
+                F.col(analysis_name),
+            )
+        ],
+        "epigenetic_measures_available_count",
+        "epigenetic_complete_six_measure_panel",
+        "epigenetic_age_acceleration_difference_recomputed",
+        "epigenetic_difference_release_minus_recomputed",
+        "epigenetic_difference_qc_status",
+        "epigenetic_clock_range_qc_status",
+    )
+)
+assert_unique(
+    epigenetic_baseline,
+    ["participant_id"],
+    "Baseline epigenetic phenotype table",
+)
+write_delta(
+    epigenetic_baseline,
+    f"{output_root}/sap_epigenetic_baseline",
+)
+
+epigenetic_qc_frames = []
+for analysis_name, specification in EPIGENETIC_BASELINE_VARIABLES.items():
+    raw_column = f"{analysis_name}_raw"
+    raw_value = F.trim(F.col(raw_column))
+    recognized_missing = (
+        F.col(raw_column).isNull()
+        | (raw_value == "")
+        | raw_value.isin(*CLSA_NUMERIC_MISSING_CODES)
+    )
+    epigenetic_qc_frames.append(
+        epigenetic_baseline.agg(
+            F.count("*").cast("long").alias("participants_total"),
+            F.count(F.col(analysis_name)).cast("long").alias(
+                "participants_nonmissing"
+            ),
+            F.sum(
+                (recognized_missing).cast("long")
+            ).alias("recognized_missing_or_blank"),
+            F.sum(
+                (
+                    (~recognized_missing)
+                    & F.col(analysis_name).isNull()
+                ).cast("long")
+            ).alias("unparsed_nonmissing_values"),
+            F.min(F.col(analysis_name)).alias("minimum"),
+            F.max(F.col(analysis_name)).alias("maximum"),
+            F.mean(F.col(analysis_name)).alias("mean"),
+            F.stddev_samp(F.col(analysis_name)).alias("standard_deviation"),
+        )
+        .withColumn("analysis_name", F.lit(analysis_name))
+        .withColumn(
+            "source_column",
+            F.lit(specification["source_column"]),
+        )
+    )
+
+epigenetic_baseline_qc = epigenetic_qc_frames[0]
+for frame in epigenetic_qc_frames[1:]:
+    epigenetic_baseline_qc = epigenetic_baseline_qc.unionByName(frame)
+epigenetic_baseline_qc = epigenetic_baseline_qc.select(
+    "analysis_name",
+    "source_column",
+    "participants_total",
+    "participants_nonmissing",
+    "recognized_missing_or_blank",
+    "unparsed_nonmissing_values",
+    "minimum",
+    "maximum",
+    "mean",
+    "standard_deviation",
+)
+write_delta(
+    epigenetic_baseline_qc,
+    f"{output_root}/sap_epigenetic_baseline_qc",
+)
+
+epigenetic_formula_qc = (
+    epigenetic_baseline
+    .groupBy(
+        "epigenetic_difference_qc_status",
+        "epigenetic_clock_range_qc_status",
+    )
+    .agg(F.count("*").alias("participants"))
+)
+write_delta(
+    epigenetic_formula_qc,
+    f"{output_root}/sap_epigenetic_formula_qc",
+)
+display(epigenetic_baseline_qc.orderBy("analysis_name"))
+display(epigenetic_formula_qc.orderBy("epigenetic_difference_qc_status"))
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 7. Link images to the matching visit age
 
 # COMMAND ----------
 if not Path(image_manifest_path).exists():
@@ -922,9 +1222,52 @@ print(
     sap_fundus_images.count(),
 )
 
+baseline_images = valid_images.filter(F.col("visit") == "BL")
+sap_fundus_epigenetic_linkage = (
+    baseline_images
+    .join(epigenetic_baseline, "participant_id", "left")
+    .withColumn(
+        "epigenetic_link_status",
+        F.when(
+            F.col("epigenetic_measures_available_count") > 0,
+            F.lit("baseline_epigenetic_measure_available"),
+        )
+        .when(
+            F.col("measurement_visit") == "BL",
+            F.lit("baseline_record_present_epigenetic_measures_missing"),
+        )
+        .otherwise(F.lit("baseline_questionnaire_record_not_matched")),
+    )
+)
+sap_fundus_epigenetic_analysis = sap_fundus_epigenetic_linkage.filter(
+    F.col("epigenetic_link_status")
+    == "baseline_epigenetic_measure_available"
+)
+if not sap_fundus_epigenetic_analysis.limit(1).count():
+    raise ValueError(
+        "No baseline fundus image linked to any released epigenetic-age "
+        "measure. Review sap_epigenetic_baseline_qc and the participant IDs."
+    )
+write_delta(
+    sap_fundus_epigenetic_linkage,
+    f"{output_root}/sap_fundus_epigenetic_linkage_audit",
+)
+write_delta(
+    sap_fundus_epigenetic_analysis,
+    f"{output_root}/sap_fundus_epigenetic_analysis",
+)
+display(
+    sap_fundus_epigenetic_linkage.groupBy("epigenetic_link_status")
+    .agg(
+        F.count("*").alias("images"),
+        F.countDistinct("participant_id").alias("participants"),
+    )
+    .orderBy("epigenetic_link_status")
+)
+
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 7. Longitudinal age consistency checks
+# MAGIC ## 8. Longitudinal age consistency checks
 # MAGIC
 # MAGIC This check compares the released age increment with elapsed time between
 # MAGIC visit-date proxies. It is quality control only and does not manufacture
@@ -994,7 +1337,7 @@ display(age_linkage_qc.groupBy("age_timing_qc_status").count())
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 8. Variable provenance and availability audit
+# MAGIC ## 9. Variable provenance and availability audit
 
 # COMMAND ----------
 availability_rows = []
@@ -1008,11 +1351,14 @@ for visit, source_map in (("BL", BASELINE_MAP), ("F1", FOLLOWUP1_MAP)):
             note = "SAP row is blank; no frailty variable was derived."
         elif standard_name == "epigenetic_age":
             status = (
-                "clock_outputs_preserved_separately"
+                "six_baseline_derived_methylation_outputs_preserved"
                 if visit == "BL"
                 else "not_released_for_visit"
             )
-            note = "BL contains DNAmAge_COM and Hannum_Age_COM."
+            note = (
+                "BL contains DNAmAge, acceleration difference/residual, IEAA, "
+                "EEAA, and Hannum age; no raw DNA files are required."
+            )
         elif standard_name == "analytic_weight" and visit == "F1":
             status = "approved_longitudinal_weight_required"
             note = "F1 contains WGHTS_PROV_COF1 but no analytic weight field."
@@ -1049,11 +1395,22 @@ display(availability.orderBy("standard_name", "visit"))
 # MAGIC - `sap_questionnaire_extraction_log`: exact extracted CSV provenance
 # MAGIC - `sap_questionnaire_input_qc`: malformed-ID and duplicate-row counts
 # MAGIC - `sap_questionnaire_visit`: one row per participant and visit
+# MAGIC - `sap_epigenetic_variable_dictionary`: six released source variables,
+# MAGIC   definitions, roles, units, and baseline provenance
+# MAGIC - `sap_epigenetic_baseline`: one row per baseline participant with raw,
+# MAGIC   parsed, completeness, and difference-consistency fields
+# MAGIC - `sap_epigenetic_baseline_qc`: missingness, parsing, and distributions
+# MAGIC - `sap_epigenetic_formula_qc`: released-versus-recomputed difference and
+# MAGIC   clock-age range review counts
 # MAGIC - `sap_fundus_image_linkage_audit`: every parseable BL/F1 image and its
 # MAGIC   age-link status
 # MAGIC - `sap_fundus_image_exclusions`: images excluded for an unparsed ID,
 # MAGIC   unsupported visit, unmatched questionnaire visit, or missing age
 # MAGIC - `sap_fundus_image_analysis`: only images with a visit-matched age
+# MAGIC - `sap_fundus_epigenetic_linkage_audit`: every parseable baseline image
+# MAGIC   and its baseline methylation-phenotype linkage status
+# MAGIC - `sap_fundus_epigenetic_analysis`: baseline images linked to at least
+# MAGIC   one released epigenetic-age measure
 # MAGIC - `sap_age_linkage_qc`: BL/F1 released-age versus date-proxy checks
 # MAGIC - `sap_variable_availability`: source-column and unresolved-item audit
 # MAGIC - `sap_questionnaire_duplicate_conflicts`: written only when genuinely

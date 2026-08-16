@@ -74,6 +74,22 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
         self.assertIn('"artifact_key": key', self.source)
         self.assertIn('set(existing["image_key"].astype(str))', self.source)
 
+    def test_review_figures_register_anatomy_and_keep_confidence_exploratory(self):
+        self.assertIn("disc_fovea_affine_matrix", self.source)
+        self.assertIn("select_probability_extremes", self.source)
+        self.assertIn("top_glaucoma_like", self.source)
+        self.assertIn("bottom_healthy_like", self.source)
+        self.assertIn("exploratory post hoc analysis", self.source)
+        self.assertIn("mean_vessel_prevalence", self.source)
+        self.assertIn("mean_signed_attribution", self.source)
+        self.assertIn("confidence_extreme_inference", self.source)
+
+    def test_review_figures_require_complete_matched_cohort(self):
+        self.assertIn("expected_matched_participants", self.source)
+        self.assertIn("anatomy_artifact_participants", self.source)
+        self.assertIn("explain_all_matched_clsa=true", self.source)
+        self.assertIn("maximum_images=0", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

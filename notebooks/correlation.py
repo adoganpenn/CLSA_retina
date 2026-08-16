@@ -398,6 +398,10 @@ if should_run_retinal_age:
         "cesd10_score",
         "multimorbidity_selected_count",
         "epigenetic_dnam_age",
+        "epigenetic_age_acceleration_difference",
+        "epigenetic_age_acceleration_residual",
+        "epigenetic_ieaa",
+        "epigenetic_eeaa",
         "epigenetic_hannum_age",
         "frailty",
     ]

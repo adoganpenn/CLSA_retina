@@ -17,6 +17,15 @@ class CorrelationNotebookContractTests(unittest.TestCase):
         self.assertIn('groupBy("participant_id", "visit")', notebook)
         self.assertIn("retinal_age_gap", notebook)
         self.assertIn("COMORBIDITY_OUTCOMES", notebook)
+        for epigenetic_measure in (
+            "epigenetic_dnam_age",
+            "epigenetic_age_acceleration_difference",
+            "epigenetic_age_acceleration_residual",
+            "epigenetic_ieaa",
+            "epigenetic_eeaa",
+            "epigenetic_hannum_age",
+        ):
+            self.assertIn(epigenetic_measure, notebook)
         self.assertIn('dbutils.widgets.text("expected_embedding_dim", "1024")', notebook)
         self.assertIn("retfound_embedding", module)
         self.assertIn("GroupKFold", module)

@@ -57,8 +57,28 @@ class GlaucomaClassifierSpatialContractTests(unittest.TestCase):
         self.assertIn("clsa_logit_replay_tolerance", self.source)
         self.assertIn("replay_probability_error", self.source)
         self.assertIn("max_explain_images_per_participant", self.source)
+        self.assertIn(".drop_duplicates(", self.source)
+        self.assertIn('["source", "participant_id", "eye"]', self.source)
+
+    def test_full_matched_clsa_explainability_is_independent_of_zeiss(self):
+        self.assertIn("explain_all_matched_clsa", self.source)
+        self.assertIn("include_zeiss_in_explainability", self.source)
+        self.assertIn("use_all_matched_clsa_images", self.source)
+        self.assertIn("select_representative_eye_images", self.source)
+        self.assertIn('"all_matched_clsa_participants"', self.source)
+        self.assertIn('"clsa_participants_selected"', self.source)
+
+    def test_full_matched_clsa_is_the_safe_default(self):
         self.assertIn(
-            '.drop_duplicates(["source", "participant_id", "eye"]',
+            '"explain_all_matched_clsa", "true", ["true", "false"]',
+            self.source,
+        )
+        self.assertIn(
+            '"include_zeiss_in_explainability", "false", ["false", "true"]',
+            self.source,
+        )
+        self.assertIn(
+            '"use_all_matched_clsa_images", "false", ["false", "true"]',
             self.source,
         )
 

@@ -69,6 +69,15 @@ dbutils.widgets.text("inner_folds", "4")
 dbutils.widgets.text("bootstrap_repetitions", "2000")
 dbutils.widgets.dropdown("run_explainability", "true", ["true", "false"])
 dbutils.widgets.dropdown("explain_all_images", "false", ["false", "true"])
+dbutils.widgets.dropdown(
+    "explain_all_matched_clsa", "true", ["true", "false"]
+)
+dbutils.widgets.dropdown(
+    "include_zeiss_in_explainability", "false", ["false", "true"]
+)
+dbutils.widgets.dropdown(
+    "use_all_matched_clsa_images", "false", ["false", "true"]
+)
 dbutils.widgets.text("n_explain_participants_per_group", "40")
 dbutils.widgets.text("max_explain_images_per_participant", "2")
 dbutils.widgets.text("explain_batch_size", "50")
@@ -133,6 +142,18 @@ inner_folds = int(dbutils.widgets.get("inner_folds"))
 bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
 run_explainability_flag = dbutils.widgets.get("run_explainability") == "true"
 explain_all_images = dbutils.widgets.get("explain_all_images") == "true"
+explain_all_matched_clsa = (
+    dbutils.widgets.get("explain_all_matched_clsa") == "true"
+    or explain_all_images
+)
+include_zeiss_in_explainability = (
+    dbutils.widgets.get("include_zeiss_in_explainability") == "true"
+    or explain_all_images
+)
+use_all_matched_clsa_images = (
+    dbutils.widgets.get("use_all_matched_clsa_images") == "true"
+    or explain_all_images
+)
 n_explain_participants_per_group = int(
     dbutils.widgets.get("n_explain_participants_per_group")
 )
@@ -768,11 +789,14 @@ display(pd.DataFrame(shortcut_tests).T)
 # MAGIC %md
 # MAGIC ## 6. Lock the held-out explainability sample
 # MAGIC
-# MAGIC Sampling occurs randomly at participant level, stratified by CLSA label,
-# MAGIC with a separate random Zeiss sample. This avoids selecting spatial maps
-# MAGIC because they produced an extreme score. All available eyes from each
-# MAGIC selected participant are then explained; success/error labels are
-# MAGIC retained for descriptive overlays.
+# MAGIC The default explains the full matched CLSA cohort and excludes Zeiss
+# MAGIC from this stage. It retains one representative acquisition per eye (at
+# MAGIC most two per participant), selected without reference to map appearance.
+# MAGIC Set `explain_all_matched_clsa=false` only for a development smoke sample,
+# MAGIC and set `include_zeiss_in_explainability=true` only for a deliberate
+# MAGIC cross-device rerun. Set
+# MAGIC `use_all_matched_clsa_images=true` only when every repeated acquisition
+# MAGIC is required; participant-level inference remains the statistical unit.
 
 # COMMAND ----------
 participant_predictions["classification_group"] = np.select(
@@ -790,7 +814,7 @@ participant_predictions["classification_group"] = np.select(
     default="unclassified",
 )
 participant_predictions["source"] = "CLSA"
-if explain_all_images:
+if explain_all_matched_clsa:
     selected_clsa_participants = participant_predictions.copy()
 else:
     samples = []
@@ -811,7 +835,12 @@ zeiss_for_sampling = zeiss_participant_predictions.rename(
         "glaucoma_probability_external": "glaucoma_probability_oof",
     }
 ).copy()
-if explain_all_images:
+if not include_zeiss_in_explainability:
+    selected_zeiss_participants = zeiss_for_sampling.iloc[0:0].copy()
+    selected_zeiss_participants["classification_group"] = pd.Series(
+        dtype="object"
+    )
+elif explain_all_images:
     selected_zeiss_participants = zeiss_for_sampling.copy()
     selected_zeiss_participants["classification_group"] = "external_zeiss"
 else:
@@ -854,40 +883,65 @@ zeiss_explain_images = zeiss_images[
     how="inner",
     validate="many_to_one",
 )
+# A Zeiss participant can have many repeated DICOM acquisitions. Select the
+# image nearest that participant's mean classifier logit within each eye. Apply
+# the same representative-eye rule to CLSA unless every matched CLSA acquisition
+# was explicitly requested. This avoids cherry-picking extreme predictions and
+# prevents repeated acquisitions from dominating compute or descriptive plots.
+def select_representative_eye_images(frame):
+    frame = frame.copy()
+    frame["eye"] = frame["eye"].fillna("UNKNOWN").astype(str)
+    frame["_participant_mean_logit"] = frame.groupby(
+        ["source", "participant_id"]
+    )["classifier_logit_oof"].transform("mean")
+    frame["_representative_distance"] = (
+        frame["classifier_logit_oof"]
+        - frame["_participant_mean_logit"]
+    ).abs()
+    return (
+        frame.sort_values(
+            [
+                "source",
+                "participant_id",
+                "eye",
+                "_representative_distance",
+                "image_path",
+            ],
+            kind="stable",
+        )
+        .drop_duplicates(
+            ["source", "participant_id", "eye"], keep="first"
+        )
+        .groupby(
+            ["source", "participant_id"],
+            sort=False,
+            group_keys=False,
+        )
+        .head(max_explain_images_per_participant)
+        .drop(
+            columns=[
+                "_participant_mean_logit",
+                "_representative_distance",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+
+if use_all_matched_clsa_images and explain_all_matched_clsa:
+    clsa_explain_images = clsa_explain_images.copy()
+    clsa_explain_images["eye"] = (
+        clsa_explain_images["eye"].fillna("UNKNOWN").astype(str)
+    )
+else:
+    clsa_explain_images = select_representative_eye_images(
+        clsa_explain_images
+    )
+zeiss_explain_images = select_representative_eye_images(zeiss_explain_images)
 explain_images = pd.concat(
     [clsa_explain_images, zeiss_explain_images],
     ignore_index=True,
     sort=False,
-)
-# A Zeiss participant can have many repeated DICOM acquisitions. Select the
-# image nearest that participant's mean classifier logit within each eye, then
-# cap the participant total. This avoids cherry-picking extreme predictions and
-# prevents a small participant sample from expanding into tens of thousands of
-# explanation runs.
-explain_images["eye"] = explain_images["eye"].fillna("UNKNOWN").astype(str)
-explain_images["_participant_mean_logit"] = explain_images.groupby(
-    ["source", "participant_id"]
-)["classifier_logit_oof"].transform("mean")
-explain_images["_representative_distance"] = (
-    explain_images["classifier_logit_oof"]
-    - explain_images["_participant_mean_logit"]
-).abs()
-explain_images = (
-    explain_images.sort_values(
-        [
-            "source",
-            "participant_id",
-            "eye",
-            "_representative_distance",
-            "image_path",
-        ],
-        kind="stable",
-    )
-    .drop_duplicates(["source", "participant_id", "eye"], keep="first")
-    .groupby(["source", "participant_id"], sort=False, group_keys=False)
-    .head(max_explain_images_per_participant)
-    .drop(columns=["_participant_mean_logit", "_representative_distance"])
-    .reset_index(drop=True)
 )
 write_frame(
     selected_participants,
@@ -905,8 +959,12 @@ write_frame(annotation_template, anatomy_root / "optic_disc_annotation_template_
 print("Selected participants:", len(selected_participants))
 print("Selected images:", len(explain_images))
 print(
-    "Maximum representative images per participant:",
-    max_explain_images_per_participant,
+    "CLSA image policy:",
+    (
+        "all matched acquisitions"
+        if use_all_matched_clsa_images and explain_all_matched_clsa
+        else f"representative eyes, maximum {max_explain_images_per_participant}"
+    ),
 )
 
 # COMMAND ----------
@@ -1197,8 +1255,10 @@ if run_explainability_flag:
             clsa_model, device, resolved_repo, resolved_checkpoint = (
                 load_retfound_model(retfound_config)
             )
-            zeiss_model = load_zeiss_retfound_model(
-                resolved_checkpoint, device
+            zeiss_model = (
+                load_zeiss_retfound_model(resolved_checkpoint, device)
+                if include_zeiss_in_explainability
+                else None
             )
         except Exception as error:
             message = str(error).lower()
@@ -1810,6 +1870,17 @@ summary = {
     },
     "explainability_ran": run_explainability_flag,
     "n_explained_images": int(len(attribution_manifest)),
+    "explainability_scope": {
+        "all_matched_clsa_participants": explain_all_matched_clsa,
+        "all_matched_clsa_acquisitions": (
+            explain_all_matched_clsa and use_all_matched_clsa_images
+        ),
+        "include_zeiss": include_zeiss_in_explainability,
+        "clsa_participants_selected": int(
+            selected_clsa_participants["participant_id"].nunique()
+        ),
+        "clsa_images_selected": int(len(clsa_explain_images)),
+    },
     "validated_disc_annotation_coverage": validated_annotation_coverage,
     "clsa_glaucoma_validated_disc_annotation_coverage": (
         clsa_glaucoma_validated_coverage

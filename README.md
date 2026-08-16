@@ -25,7 +25,12 @@ Start with:
   immediately vectorizes only images that explicitly pass every QC flag.
 - [`notebooks/03_build_sap_analysis_dataset.py`](notebooks/03_build_sap_analysis_dataset.py)
   to extract the exact BL/F1 questionnaire releases, derive the SAP variables,
-  and link every fundus image to the age released for its matching visit.
+  and link every fundus image to the age released for its matching visit. It
+  also parses the six baseline-derived methylation phenotypes (`DNAmAge`, age-
+  acceleration difference and residual, IEAA, EEAA, and Hannum age) directly
+  from the baseline phenotype CSV, writes provenance/missingness/formula QC,
+  and creates a baseline fundus–epigenetic linkage table without reading raw
+  DNA, CpG, BGEN, or BGI files.
 - [`notebooks/correlation.py`](notebooks/correlation.py) to stratify retinal age
   across the SAP measures and evaluate participant-grouped comorbidity models
   from the 1,024-dimensional RETFound vectors.

@@ -172,6 +172,103 @@ def attribution_region_metrics(
     return output
 
 
+def disc_fovea_affine_matrix(
+    coordinates: Sequence[float],
+    *,
+    output_size: int = 256,
+    target_disc_fraction: tuple[float, float] = (0.28, 0.50),
+    target_fovea_fraction: tuple[float, float] = (0.72, 0.50),
+) -> Any:
+    """Return an affine transform that registers the disc--fovea axis.
+
+    Images from both eyes are mapped into one canonical orientation with the
+    optic disc on the left and fovea on the right.  The third landmark is a
+    synthetic point perpendicular to the disc--fovea axis, which fixes scale
+    and rotation without requiring an unvalidated nonlinear registration.
+    """
+    import cv2
+    import numpy as np
+
+    values = np.asarray(coordinates, dtype=float).reshape(-1)
+    if values.size != 4 or not np.isfinite(values).all():
+        raise ValueError("Coordinates must contain four finite values")
+    if output_size < 32:
+        raise ValueError("output_size must be at least 32 pixels")
+    fovea_x, fovea_y, disc_x, disc_y = values.tolist()
+    direction = np.asarray([fovea_x - disc_x, fovea_y - disc_y], dtype=float)
+    distance = float(np.linalg.norm(direction))
+    if distance < 1.0:
+        raise ValueError("Disc and fovea centers are too close to register")
+    perpendicular = np.asarray([-direction[1], direction[0]], dtype=float)
+    source = np.float32(
+        [
+            [disc_x, disc_y],
+            [fovea_x, fovea_y],
+            [disc_x + perpendicular[0], disc_y + perpendicular[1]],
+        ]
+    )
+    target_disc = np.asarray(target_disc_fraction, dtype=float) * output_size
+    target_fovea = np.asarray(target_fovea_fraction, dtype=float) * output_size
+    target_direction = target_fovea - target_disc
+    target_perpendicular = np.asarray(
+        [-target_direction[1], target_direction[0]], dtype=float
+    )
+    target = np.float32(
+        [
+            target_disc,
+            target_fovea,
+            target_disc + target_perpendicular,
+        ]
+    )
+    return cv2.getAffineTransform(source, target)
+
+
+def select_probability_extremes(
+    frame: Any,
+    *,
+    probability_column: str = "glaucoma_probability_oof",
+    participant_column: str = "participant_id",
+    fraction: float = 0.10,
+) -> Any:
+    """Select disjoint participant-level bottom and top score fractions.
+
+    Ties are resolved stably by participant ID.  At least one participant is
+    retained in each tail, and the two tails are prevented from overlapping.
+    """
+    import numpy as np
+    import pandas as pd
+
+    require_columns(
+        frame,
+        [participant_column, probability_column],
+        "Confidence-analysis frame",
+    )
+    if not 0 < fraction <= 0.25:
+        raise ValueError("fraction must lie in (0, 0.25]")
+    work = frame.copy()
+    work[participant_column] = work[participant_column].astype(str)
+    work[probability_column] = pd.to_numeric(
+        work[probability_column], errors="coerce"
+    )
+    work = work[np.isfinite(work[probability_column])].copy()
+    if work[participant_column].duplicated().any():
+        raise ValueError("Confidence analysis requires one row per participant")
+    if len(work) < 4:
+        raise ValueError("At least four participants are required")
+    work = work.sort_values(
+        [probability_column, participant_column], kind="stable"
+    ).reset_index(drop=True)
+    tail_size = max(1, int(math.ceil(len(work) * fraction)))
+    tail_size = min(tail_size, len(work) // 2)
+    bottom = work.head(tail_size).copy()
+    bottom["confidence_extreme"] = "bottom_healthy_like"
+    bottom["confidence_extreme_code"] = 0
+    top = work.tail(tail_size).copy()
+    top["confidence_extreme"] = "top_glaucoma_like"
+    top["confidence_extreme_code"] = 1
+    return pd.concat([bottom, top], ignore_index=True)
+
+
 def sample_translated_control_masks(
     target_mask: Any,
     retina_mask: Any,

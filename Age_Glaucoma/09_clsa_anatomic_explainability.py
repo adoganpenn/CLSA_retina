@@ -1018,3 +1018,829 @@ try:
 except Exception:
     pass
 print("Notebook 09 complete; temporary Hugging Face token widget removed")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 7. Anatomy and attribution review figures
+# MAGIC
+# MAGIC These cells reuse the completed notebook 08 attribution maps and the
+# MAGIC completed notebook 09 anatomy artifacts. They do **not** rerun RETFound
+# MAGIC or the Fundus Image Toolbox models.
+# MAGIC
+# MAGIC For group averages, every image is affinely registered to a common
+# MAGIC disc--fovea axis (disc left, fovea right) before averaging. This
+# MAGIC canonicalizes laterality, rotation, and disc--fovea scale. It is an
+# MAGIC visualization registration—not a new disease-model input.
+# MAGIC
+# MAGIC The confidence-tail comparison is an **exploratory post hoc analysis**.
+# MAGIC It uses participant-held-out glaucoma probabilities and compares the
+# MAGIC highest 10% (glaucoma-like) with the lowest 10% (healthy-like) among all
+# MAGIC matched participants with completed notebook 08/09 artifacts. It must
+# MAGIC not be interpreted as independent validation.
+
+# COMMAND ----------
+from pathlib import Path
+import os
+import sys
+import time
+import uuid
+
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy import ndimage
+from scipy.stats import fisher_exact
+
+
+def review_widget_or_default(name, default):
+    try:
+        value = dbutils.widgets.get(name).strip()
+    except Exception:
+        value = ""
+    return value or str(default)
+
+
+review_repo_root = Path(
+    review_widget_or_default(
+        "repo_root",
+        "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
+    )
+)
+review_age_glaucoma_root = Path(
+    review_widget_or_default(
+        "age_glaucoma_output_root",
+        "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+        "clsa_retinal_aging/Age_Glaucoma",
+    )
+)
+notebook08_root = Path(
+    review_widget_or_default(
+        "notebook08_root",
+        review_age_glaucoma_root
+        / "13_glaucoma_classifier_spatial_validation",
+    )
+)
+output_root = Path(
+    review_widget_or_default(
+        "output_root",
+        review_age_glaucoma_root / "14_clsa_anatomic_explainability",
+    )
+)
+review_module_root = review_repo_root / "src"
+if str(review_module_root) not in sys.path:
+    sys.path.insert(0, str(review_module_root))
+
+from clsa_anatomic_explainability import (  # noqa: E402
+    disc_fovea_affine_matrix,
+    participant_permutation_inference,
+    select_probability_extremes,
+)
+from fundus_retfound_pipeline import (  # noqa: E402
+    QualityConfig,
+    preprocess_fundus,
+    write_frame,
+    write_json,
+)
+
+review_root = output_root / "05_review_figures"
+review_root.mkdir(parents=True, exist_ok=True)
+segmentation_root = output_root / "01_image_anatomy"
+statistics_root = output_root / "03_statistics"
+attribution_batch_root = notebook08_root / "03_patch_attributions" / "batches"
+review_local_artifact_root = Path(
+    f"/local_disk0/tmp/clsa_anatomic_review_{os.getpid()}"
+)
+review_local_artifact_root.mkdir(parents=True, exist_ok=True)
+quality_config = QualityConfig(
+    output_size=256,
+    model_input_size=224,
+    save_preprocessed=False,
+)
+permutations = int(review_widget_or_default("permutations", "5000"))
+bootstrap_repetitions = int(
+    review_widget_or_default("bootstrap_repetitions", "2000")
+)
+review_examples_per_group = 3
+confidence_extreme_fraction = 0.10
+registration_size = 256
+
+
+def publish_review_artifact(local_path, volume_path, retries=4):
+    """Publish a completed local artifact without seek-writing to a Volume."""
+    local_path = Path(local_path)
+    volume_path = Path(volume_path)
+    if not local_path.is_file() or local_path.stat().st_size < 1:
+        raise OSError(f"Local review artifact is absent or empty: {local_path}")
+    volume_path.parent.mkdir(parents=True, exist_ok=True)
+    expected_bytes = int(local_path.stat().st_size)
+    source_uri = f"file:{local_path.resolve()}"
+    last_error = None
+    for attempt in range(1, retries + 1):
+        partial_path = volume_path.with_name(
+            f".{volume_path.name}.{uuid.uuid4().hex}.partial"
+        )
+        try:
+            dbutils.fs.cp(source_uri, str(partial_path), False)
+            if int(partial_path.stat().st_size) != expected_bytes:
+                raise OSError("Incomplete temporary review artifact copy")
+            if volume_path.exists():
+                dbutils.fs.rm(str(volume_path), False)
+            dbutils.fs.mv(str(partial_path), str(volume_path), False)
+            return volume_path
+        except Exception as error:
+            last_error = error
+            try:
+                dbutils.fs.rm(str(partial_path), False)
+            except Exception:
+                pass
+            if attempt < retries:
+                delay = 2 ** (attempt - 1)
+                print(
+                    f"Review artifact publish {attempt}/{retries} failed; "
+                    f"retrying in {delay}s: {type(error).__name__}: {error}",
+                    flush=True,
+                )
+                time.sleep(delay)
+    raise OSError(f"Could not publish review artifact: {volume_path}") from last_error
+
+saved_image_anatomy_path = (
+    segmentation_root / "clsa_anatomic_explainability_private.parquet"
+)
+saved_participant_anatomy_path = (
+    statistics_root / "participant_anatomic_metrics_private.parquet"
+)
+participant_prediction_path = (
+    notebook08_root
+    / "01_participant_classifier"
+    / "CLSA_glaucoma_participant_oof_predictions.parquet"
+)
+for label, path in {
+    "image anatomy": saved_image_anatomy_path,
+    "participant anatomy": saved_participant_anatomy_path,
+    "participant predictions": participant_prediction_path,
+}.items():
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {label} output: {path}")
+
+review_images_all = pd.read_parquet(saved_image_anatomy_path)
+review_images_all["participant_id"] = review_images_all[
+    "participant_id"
+].astype(str)
+review_images = review_images_all[review_images_all["anatomy_valid"]].copy()
+participant_anatomy_review = pd.read_parquet(saved_participant_anatomy_path)
+participant_anatomy_review["participant_id"] = (
+    participant_anatomy_review["participant_id"].astype(str)
+)
+participant_predictions_review = pd.read_parquet(participant_prediction_path)
+participant_predictions_review["participant_id"] = (
+    participant_predictions_review["participant_id"].astype(str)
+)
+prediction_columns = [
+    "participant_id",
+    "glaucoma_label",
+    "glaucoma_probability_oof",
+    "classifier_logit_oof",
+]
+missing_prediction_columns = set(prediction_columns) - set(
+    participant_predictions_review.columns
+)
+if missing_prediction_columns:
+    raise ValueError(
+        "Notebook 08 participant predictions are missing: "
+        f"{sorted(missing_prediction_columns)}"
+    )
+participant_predictions_review = participant_predictions_review[
+    prediction_columns
+].drop_duplicates("participant_id")
+
+expected_matched_participants = int(
+    participant_predictions_review["participant_id"].nunique()
+)
+anatomy_artifact_participants = int(
+    review_images_all["participant_id"].nunique()
+)
+print(
+    "Full matched-cohort anatomy coverage: "
+    f"{anatomy_artifact_participants:,}/{expected_matched_participants:,} "
+    "participants",
+    flush=True,
+)
+if anatomy_artifact_participants != expected_matched_participants:
+    raise RuntimeError(
+        "Notebook 09 does not yet contain all matched CLSA participants: "
+        f"{anatomy_artifact_participants:,} completed versus "
+        f"{expected_matched_participants:,} expected. Rerun notebook 08 with "
+        "explain_all_matched_clsa=true and "
+        "include_zeiss_in_explainability=false, then rerun notebook 09 with "
+        "maximum_images=0."
+    )
+
+review_images = review_images.merge(
+    participant_predictions_review,
+    on=["participant_id", "glaucoma_label"],
+    how="left",
+    validate="many_to_one",
+)
+if review_images["glaucoma_probability_oof"].isna().any():
+    raise ValueError("Some anatomy images lack participant-held-out scores")
+
+attribution_map_paths = {
+    path.name.replace("_exact_glaucoma_attribution.npz", ""): str(path)
+    for path in attribution_batch_root.rglob(
+        "*_exact_glaucoma_attribution.npz"
+    )
+}
+review_images["attribution_npz_path"] = review_images["image_key"].map(
+    attribution_map_paths
+)
+if review_images["attribution_npz_path"].isna().any():
+    raise FileNotFoundError(
+        "One or more valid anatomy images lack an attribution-map artifact"
+    )
+
+score_anatomy = participant_anatomy_review.merge(
+    participant_predictions_review,
+    on=["participant_id", "glaucoma_label"],
+    how="inner",
+    validate="one_to_one",
+)
+confidence_extremes = select_probability_extremes(
+    score_anatomy,
+    fraction=confidence_extreme_fraction,
+)
+extreme_lookup = confidence_extremes.set_index("participant_id")[
+    "confidence_extreme"
+].to_dict()
+review_images["confidence_extreme"] = review_images["participant_id"].map(
+    extreme_lookup
+)
+
+confidence_audit = (
+    confidence_extremes.groupby("confidence_extreme", as_index=False)
+    .agg(
+        participants=("participant_id", "nunique"),
+        known_glaucoma_fraction=("glaucoma_label", "mean"),
+        mean_held_out_probability=("glaucoma_probability_oof", "mean"),
+        minimum_held_out_probability=("glaucoma_probability_oof", "min"),
+        maximum_held_out_probability=("glaucoma_probability_oof", "max"),
+    )
+    .sort_values("mean_held_out_probability")
+)
+display(confidence_audit.round(4))
+
+# COMMAND ----------
+def load_registered_review_arrays(record, output_size=256):
+    """Load one completed case and register it to the disc--fovea axis."""
+    processed = preprocess_fundus(record["image_path"], quality_config)
+    rgb = np.asarray(processed.image.convert("RGB"), dtype=np.uint8)
+    with np.load(record["mask_path"]) as saved_masks:
+        masks = {
+            name: np.asarray(saved_masks[name], dtype=bool)
+            for name in saved_masks.files
+        }
+    with np.load(record["attribution_npz_path"]) as saved_attribution:
+        attribution_grid = np.asarray(
+            saved_attribution["variable_grid"], dtype=float
+        )
+    attribution = ndimage.zoom(
+        attribution_grid,
+        (
+            rgb.shape[0] / attribution_grid.shape[0],
+            rgb.shape[1] / attribution_grid.shape[1],
+        ),
+        order=1,
+    )[: rgb.shape[0], : rgb.shape[1]]
+    retina = np.logical_or.reduce(list(masks.values()))
+    attribution_scale = max(
+        float(np.quantile(np.abs(attribution[retina]), 0.99)), 1e-8
+    )
+    attribution = np.clip(attribution / attribution_scale, -1.0, 1.0)
+    matrix = disc_fovea_affine_matrix(
+        (
+            record["fovea_x_px"],
+            record["fovea_y_px"],
+            record["optic_disc_x_px"],
+            record["optic_disc_y_px"],
+        ),
+        output_size=output_size,
+    )
+
+    def warp(array, interpolation, border_value=0):
+        return cv2.warpAffine(
+            array,
+            matrix,
+            (output_size, output_size),
+            flags=interpolation,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=border_value,
+        )
+
+    registered_masks = {
+        name: warp(mask.astype(np.uint8), cv2.INTER_NEAREST) > 0
+        for name, mask in masks.items()
+    }
+    return {
+        "rgb": warp(rgb, cv2.INTER_LINEAR),
+        "attribution": warp(
+            attribution.astype(np.float32), cv2.INTER_LINEAR
+        ),
+        "retina": warp(retina.astype(np.uint8), cv2.INTER_NEAREST) > 0,
+        "masks": registered_masks,
+    }
+
+
+def save_review_figure(fig, filename):
+    """Stage a complete PNG locally before publishing it to the Volume."""
+    local_path = review_local_artifact_root / filename
+    destination = review_root / filename
+    fig.savefig(local_path, dpi=220, bbox_inches="tight")
+    publish_review_artifact(local_path, destination)
+    local_path.unlink(missing_ok=True)
+    display(fig)
+    plt.close(fig)
+    return destination
+
+
+def add_roi_contours(axis, masks, linewidth=1.2):
+    for name, color, label in (
+        ("optic_disc_roi", "cyan", "optic-disc ROI"),
+        ("peripapillary_annulus", "yellow", "peripapillary annulus"),
+        ("fovea_roi", "lime", "foveal ROI"),
+    ):
+        mask = masks[name]
+        if mask.any():
+            axis.contour(
+                mask,
+                levels=[0.5],
+                colors=[color],
+                linewidths=linewidth,
+            )
+    axis.text(
+        0.01,
+        0.02,
+        "cyan=disc | yellow=peripapillary | green=fovea | red=vessels",
+        transform=axis.transAxes,
+        fontsize=6,
+        color="white",
+        bbox={"facecolor": "black", "alpha": 0.65, "pad": 2},
+    )
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ### 7A. Deidentified representative ROI and attribution panels
+# MAGIC
+# MAGIC Within each known CLSA group, cases are selected at evenly spaced score
+# MAGIC ranks rather than by the appearance of their heatmaps.
+
+# COMMAND ----------
+representatives = []
+for glaucoma_label, group in review_images.groupby("glaucoma_label"):
+    ordered_group = group.sort_values(
+        ["glaucoma_probability_oof", "image_key"], kind="stable"
+    ).reset_index(drop=True)
+    positions = np.linspace(
+        0,
+        len(ordered_group) - 1,
+        min(review_examples_per_group, len(ordered_group)),
+    ).round().astype(int)
+    representatives.append(ordered_group.iloc[np.unique(positions)])
+representatives = pd.concat(representatives, ignore_index=True)
+
+fig, axes = plt.subplots(
+    len(representatives), 4, figsize=(14, 3.2 * len(representatives))
+)
+if len(representatives) == 1:
+    axes = axes[None, :]
+for row_index, (_, record) in enumerate(representatives.iterrows()):
+    arrays = load_registered_review_arrays(record, registration_size)
+    rgb = arrays["rgb"]
+    masks = arrays["masks"]
+    attribution = arrays["attribution"]
+    axes[row_index, 0].imshow(rgb)
+    axes[row_index, 0].set_title(
+        f"Known {'glaucoma' if int(record['glaucoma_label']) else 'healthy'} | "
+        f"held-out p={record['glaucoma_probability_oof']:.2f}"
+    )
+    axes[row_index, 1].imshow(rgb)
+    axes[row_index, 1].imshow(masks["vessels"], cmap="Reds", alpha=0.58)
+    add_roi_contours(axes[row_index, 1], masks)
+    axes[row_index, 1].set_title("Registered anatomy")
+    axes[row_index, 2].imshow(
+        attribution, cmap="coolwarm", vmin=-1, vmax=1
+    )
+    axes[row_index, 2].set_title("Signed attribution (within-image scaled)")
+    axes[row_index, 3].imshow(rgb)
+    axes[row_index, 3].imshow(
+        attribution, cmap="coolwarm", vmin=-1, vmax=1, alpha=0.48
+    )
+    add_roi_contours(axes[row_index, 3], masks)
+    axes[row_index, 3].set_title("Attribution + anatomy")
+    for axis in axes[row_index]:
+        axis.axis("off")
+fig.suptitle(
+    "CLSA glaucoma explainability review: anatomy-registered examples",
+    fontsize=15,
+    y=1.002,
+)
+fig.tight_layout()
+representative_figure_path = save_review_figure(
+    fig, "clsa_registered_representative_roi_heatmaps.png"
+)
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ### 7B. Registered group-average images, segmentations, and heatmaps
+# MAGIC
+# MAGIC Vessel panels show the fraction of registered images containing a
+# MAGIC vessel at each pixel. ROI panels show the corresponding localization
+# MAGIC occupancy. Attribution maps are scaled within image by their 99th
+# MAGIC absolute percentile before averaging, so they describe spatial pattern
+# MAGIC rather than allowing a few high-magnitude maps to dominate.
+
+# COMMAND ----------
+average_group_names = [
+    "known_healthy",
+    "known_glaucoma",
+    "bottom_healthy_like",
+    "top_glaucoma_like",
+]
+
+
+def empty_average_accumulator(size):
+    return {
+        "n_images": 0,
+        "rgb_sum": np.zeros((size, size, 3), dtype=np.float64),
+        "coverage": np.zeros((size, size), dtype=np.float64),
+        "attribution_sum": np.zeros((size, size), dtype=np.float64),
+        "vessels_sum": np.zeros((size, size), dtype=np.float64),
+        "optic_disc_sum": np.zeros((size, size), dtype=np.float64),
+        "peripapillary_sum": np.zeros((size, size), dtype=np.float64),
+        "fovea_sum": np.zeros((size, size), dtype=np.float64),
+    }
+
+
+average_accumulators = {
+    name: empty_average_accumulator(registration_size)
+    for name in average_group_names
+}
+
+
+def update_average(accumulator, arrays):
+    retina = arrays["retina"].astype(float)
+    masks = arrays["masks"]
+    accumulator["n_images"] += 1
+    accumulator["coverage"] += retina
+    accumulator["rgb_sum"] += (
+        arrays["rgb"].astype(float) / 255.0
+    ) * retina[..., None]
+    accumulator["attribution_sum"] += arrays["attribution"] * retina
+    accumulator["vessels_sum"] += masks["vessels"].astype(float)
+    accumulator["optic_disc_sum"] += masks["optic_disc_roi"].astype(float)
+    accumulator["peripapillary_sum"] += masks[
+        "peripapillary_annulus"
+    ].astype(float)
+    accumulator["fovea_sum"] += masks["fovea_roi"].astype(float)
+
+
+for image_index, (_, record) in enumerate(review_images.iterrows(), start=1):
+    arrays = load_registered_review_arrays(record, registration_size)
+    known_group = (
+        "known_glaucoma"
+        if int(record["glaucoma_label"]) == 1
+        else "known_healthy"
+    )
+    update_average(average_accumulators[known_group], arrays)
+    if pd.notna(record["confidence_extreme"]):
+        update_average(
+            average_accumulators[str(record["confidence_extreme"])], arrays
+        )
+    if image_index % 25 == 0 or image_index == len(review_images):
+        print(
+            f"[review averages] {image_index:,}/{len(review_images):,} images",
+            flush=True,
+        )
+
+
+def finalize_average(accumulator):
+    coverage = np.maximum(accumulator["coverage"], 1.0)
+    result = {
+        "n_images": int(accumulator["n_images"]),
+        "mean_rgb": accumulator["rgb_sum"] / coverage[..., None],
+        "mean_signed_attribution": (
+            accumulator["attribution_sum"] / coverage
+        ),
+        "mean_vessel_prevalence": accumulator["vessels_sum"] / coverage,
+        "optic_disc_occupancy": accumulator["optic_disc_sum"] / coverage,
+        "peripapillary_occupancy": (
+            accumulator["peripapillary_sum"] / coverage
+        ),
+        "fovea_occupancy": accumulator["fovea_sum"] / coverage,
+        "retinal_coverage": accumulator["coverage"],
+    }
+    return result
+
+
+registered_averages = {
+    name: finalize_average(accumulator)
+    for name, accumulator in average_accumulators.items()
+}
+average_cache_arrays = {}
+for group_name, values in registered_averages.items():
+    for array_name, value in values.items():
+        average_cache_arrays[f"{group_name}__{array_name}"] = value
+local_average_cache = (
+    review_local_artifact_root / "registered_group_averages.npz"
+)
+np.savez_compressed(local_average_cache, **average_cache_arrays)
+registered_average_path = publish_review_artifact(
+    local_average_cache,
+    review_root / "registered_group_averages.npz",
+)
+local_average_cache.unlink(missing_ok=True)
+
+
+def plot_registered_averages(group_names, display_names, filename, title):
+    attribution_limit = max(
+        float(
+            np.quantile(
+                np.concatenate(
+                    [
+                        np.abs(
+                            registered_averages[name][
+                                "mean_signed_attribution"
+                            ]
+                        ).ravel()
+                        for name in group_names
+                    ]
+                ),
+                0.99,
+            )
+        ),
+        1e-6,
+    )
+    vessel_limit = max(
+        0.25,
+        max(
+            float(
+                np.quantile(
+                    registered_averages[name]["mean_vessel_prevalence"],
+                    0.995,
+                )
+            )
+            for name in group_names
+        ),
+    )
+    fig, axes = plt.subplots(
+        len(group_names), 4, figsize=(14, 3.5 * len(group_names))
+    )
+    if len(group_names) == 1:
+        axes = axes[None, :]
+    for row_index, (group_name, display_name) in enumerate(
+        zip(group_names, display_names)
+    ):
+        average = registered_averages[group_name]
+        axes[row_index, 0].imshow(np.clip(average["mean_rgb"], 0, 1))
+        axes[row_index, 0].set_title(
+            f"{display_name}: mean fundus (n={average['n_images']} images)"
+        )
+        anatomy_rgb = np.zeros(
+            (registration_size, registration_size, 3), dtype=float
+        )
+        anatomy_rgb[..., 0] = np.maximum(
+            average["mean_vessel_prevalence"],
+            average["peripapillary_occupancy"],
+        )
+        anatomy_rgb[..., 1] = np.maximum(
+            average["peripapillary_occupancy"],
+            average["fovea_occupancy"],
+        )
+        anatomy_rgb[..., 2] = average["optic_disc_occupancy"]
+        axes[row_index, 1].imshow(np.clip(anatomy_rgb, 0, 1))
+        axes[row_index, 1].set_title("Mean ROI occupancy")
+        vessel_image = axes[row_index, 2].imshow(
+            average["mean_vessel_prevalence"],
+            cmap="magma",
+            vmin=0,
+            vmax=vessel_limit,
+        )
+        axes[row_index, 2].set_title("Mean vessel segmentation prevalence")
+        fig.colorbar(vessel_image, ax=axes[row_index, 2], fraction=0.046)
+        attribution_image = axes[row_index, 3].imshow(
+            average["mean_signed_attribution"],
+            cmap="coolwarm",
+            vmin=-attribution_limit,
+            vmax=attribution_limit,
+        )
+        axes[row_index, 3].set_title("Mean signed RETFound attribution")
+        fig.colorbar(
+            attribution_image, ax=axes[row_index, 3], fraction=0.046
+        )
+        for axis in axes[row_index]:
+            axis.axis("off")
+    fig.suptitle(title, fontsize=15, y=1.01)
+    fig.tight_layout()
+    return save_review_figure(fig, filename)
+
+
+known_group_average_figure_path = plot_registered_averages(
+    ["known_healthy", "known_glaucoma"],
+    ["Known healthy", "Known glaucoma"],
+    "clsa_known_group_registered_averages.png",
+    "CLSA anatomy-registered group averages",
+)
+confidence_average_figure_path = plot_registered_averages(
+    ["bottom_healthy_like", "top_glaucoma_like"],
+    ["Bottom 10%: healthy-like", "Top 10%: glaucoma-like"],
+    "clsa_confidence_extremes_registered_averages.png",
+    "Exploratory held-out confidence extremes",
+)
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 8. Exploratory top-versus-bottom 10% confidence subanalysis
+# MAGIC
+# MAGIC The unit of analysis remains the participant. Because the tails are
+# MAGIC defined using the classifier score being interpreted, these estimates
+# MAGIC describe how attribution anatomy changes with model confidence; they do
+# MAGIC not test generalization or establish a disease mechanism.
+
+# COMMAND ----------
+confidence_metric_columns = [
+    column
+    for column in participant_anatomy_review.columns
+    if column not in {"participant_id", "glaucoma_label"}
+    and pd.api.types.is_numeric_dtype(participant_anatomy_review[column])
+]
+confidence_extreme_inference = participant_permutation_inference(
+    confidence_extremes,
+    confidence_metric_columns,
+    label_column="confidence_extreme_code",
+    permutations=permutations,
+    bootstrap_repetitions=bootstrap_repetitions,
+    random_state=20260816,
+).rename(
+    columns={
+        "n_glaucoma": "n_top_glaucoma_like",
+        "n_healthy": "n_bottom_healthy_like",
+        "glaucoma_minus_healthy": "top_minus_bottom",
+    }
+)
+write_frame(
+    confidence_extreme_inference,
+    review_root / "confidence_extreme_inference.csv",
+)
+
+confidence_label_table = pd.crosstab(
+    confidence_extremes["confidence_extreme"],
+    confidence_extremes["glaucoma_label"],
+).reindex(
+    index=["bottom_healthy_like", "top_glaucoma_like"],
+    columns=[0, 1],
+    fill_value=0,
+)
+confidence_odds_ratio, confidence_fisher_p = fisher_exact(
+    confidence_label_table.to_numpy()
+)
+display(
+    confidence_extreme_inference.sort_values("permutation_p_max_t").round(5)
+)
+display(
+    confidence_audit.assign(
+        known_label_fisher_exact_p=confidence_fisher_p,
+        known_label_odds_ratio=confidence_odds_ratio,
+    ).round(5)
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+for glaucoma_label, color, label in (
+    (0, "#4C78A8", "Known healthy"),
+    (1, "#E45756", "Known glaucoma"),
+):
+    values = score_anatomy.loc[
+        score_anatomy["glaucoma_label"] == glaucoma_label,
+        "glaucoma_probability_oof",
+    ]
+    axes[0].hist(
+        values,
+        bins=np.linspace(0, 1, 16),
+        alpha=0.55,
+        color=color,
+        label=label,
+    )
+bottom_threshold = float(
+    confidence_extremes.loc[
+        confidence_extremes["confidence_extreme"] == "bottom_healthy_like",
+        "glaucoma_probability_oof",
+    ].max()
+)
+top_threshold = float(
+    confidence_extremes.loc[
+        confidence_extremes["confidence_extreme"] == "top_glaucoma_like",
+        "glaucoma_probability_oof",
+    ].min()
+)
+axes[0].axvline(
+    bottom_threshold, color="#4C78A8", linestyle="--", linewidth=2
+)
+axes[0].axvline(
+    top_threshold, color="#E45756", linestyle="--", linewidth=2
+)
+axes[0].set_xlabel("Participant-held-out glaucoma probability")
+axes[0].set_ylabel("Participants")
+axes[0].set_title("Explained CLSA participant score distribution")
+axes[0].legend(frameon=False)
+
+forest = confidence_extreme_inference.sort_values(
+    "top_minus_bottom"
+).reset_index(drop=True)
+y_positions = np.arange(len(forest))
+axes[1].errorbar(
+    forest["top_minus_bottom"],
+    y_positions,
+    xerr=np.vstack(
+        [
+            np.maximum(
+                forest["top_minus_bottom"]
+                - forest["bootstrap_95_ci_low"],
+                0,
+            ),
+            np.maximum(
+                forest["bootstrap_95_ci_high"]
+                - forest["top_minus_bottom"],
+                0,
+            ),
+        ]
+    ),
+    fmt="o",
+    color="#6F4E7C",
+    ecolor="#6F4E7C",
+    capsize=3,
+)
+axes[1].axvline(0, color="black", linestyle="--", linewidth=1)
+axes[1].set_yticks(y_positions)
+axes[1].set_yticklabels(
+    [
+        value.replace("_positive_enrichment", "")
+        .replace("_absolute_enrichment", " (absolute)")
+        .replace("_", " ")
+        for value in forest["metric"]
+    ],
+    fontsize=8,
+)
+axes[1].set_xlabel("Top 10% minus bottom 10% enrichment")
+axes[1].set_title("Participant-level exploratory anatomy differences")
+fig.tight_layout()
+confidence_statistics_figure_path = save_review_figure(
+    fig, "clsa_confidence_extremes_statistics.png"
+)
+
+confidence_summary = {
+    "analysis": "CLSA_explainability_confidence_extremes",
+    "status": "exploratory_post_hoc",
+    "selection_population": (
+        "participants independently selected for notebook 08 explainability "
+        "with valid notebook 09 anatomy"
+    ),
+    "confidence_score": "participant-held-out glaucoma probability",
+    "tail_fraction": confidence_extreme_fraction,
+    "n_available_participants": int(score_anatomy["participant_id"].nunique()),
+    "n_expected_matched_participants": expected_matched_participants,
+    "n_participants_with_anatomy_artifacts": anatomy_artifact_participants,
+    "n_bottom_healthy_like": int(
+        (confidence_extremes["confidence_extreme_code"] == 0).sum()
+    ),
+    "n_top_glaucoma_like": int(
+        (confidence_extremes["confidence_extreme_code"] == 1).sum()
+    ),
+    "bottom_probability_maximum": bottom_threshold,
+    "top_probability_minimum": top_threshold,
+    "known_label_fisher_exact_p": float(confidence_fisher_p),
+    "known_label_odds_ratio": float(confidence_odds_ratio),
+    "max_t_significant_metrics": confidence_extreme_inference.loc[
+        confidence_extreme_inference["permutation_p_max_t"] < 0.05,
+        "metric",
+    ].tolist(),
+    "registration": (
+        "affine disc-fovea axis canonicalization for visualization only"
+    ),
+    "attribution_scaling": (
+        "within-image 99th absolute percentile before group averaging"
+    ),
+    "privacy": "figures and displayed summaries contain no participant IDs",
+    "outputs": {
+        "representative_figure": str(representative_figure_path),
+        "known_group_averages": str(known_group_average_figure_path),
+        "confidence_extreme_averages": str(confidence_average_figure_path),
+        "confidence_statistics": str(confidence_statistics_figure_path),
+        "registered_average_arrays": str(registered_average_path),
+        "confidence_inference": str(
+            review_root / "confidence_extreme_inference.csv"
+        ),
+    },
+}
+write_json(
+    confidence_summary,
+    review_root / "CLSA_CONFIDENCE_EXTREMES_SUMMARY.json",
+)
+print(json.dumps(confidence_summary, indent=2, default=str))

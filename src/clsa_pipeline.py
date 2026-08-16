@@ -594,6 +594,11 @@ def derive_retinal_metrics(
         "analytic_weight",
         "frailty",
         "epigenetic_age",
+        "epigenetic_age_acceleration_difference",
+        "epigenetic_age_acceleration_residual",
+        "epigenetic_ieaa",
+        "epigenetic_eeaa",
+        "epigenetic_hannum_age",
     ]
     binary = [
         "diabetes",

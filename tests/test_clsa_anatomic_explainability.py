@@ -6,8 +6,10 @@ import pandas as pd
 from src.clsa_anatomic_explainability import (
     attribution_region_metrics,
     build_anatomic_masks,
+    disc_fovea_affine_matrix,
     participant_permutation_inference,
     sample_translated_control_masks,
+    select_probability_extremes,
 )
 
 
@@ -83,6 +85,43 @@ class CLSAAnatomicExplainabilityTests(unittest.TestCase):
         optic = result.set_index("metric").loc["optic"]
         self.assertGreater(optic["glaucoma_minus_healthy"], 1.0)
         self.assertLess(optic["permutation_p_max_t"], 0.05)
+
+    def test_disc_fovea_registration_maps_to_canonical_axis(self):
+        import cv2
+
+        matrix = disc_fovea_affine_matrix(
+            (30, 50, 70, 50), output_size=100
+        )
+        transformed = cv2.transform(
+            np.asarray([[[70, 50], [30, 50]]], dtype=np.float32), matrix
+        )[0]
+        np.testing.assert_allclose(transformed[0], [28, 50], atol=1e-4)
+        np.testing.assert_allclose(transformed[1], [72, 50], atol=1e-4)
+
+    def test_probability_extremes_are_participant_level_and_disjoint(self):
+        frame = pd.DataFrame(
+            {
+                "participant_id": [f"p{index:02d}" for index in range(20)],
+                "glaucoma_probability_oof": np.linspace(0.01, 0.99, 20),
+            }
+        )
+        result = select_probability_extremes(frame, fraction=0.10)
+        self.assertEqual(len(result), 4)
+        self.assertEqual(result["participant_id"].nunique(), 4)
+        self.assertEqual(
+            set(result["confidence_extreme"]),
+            {"bottom_healthy_like", "top_glaucoma_like"},
+        )
+        self.assertLess(
+            result.loc[
+                result["confidence_extreme_code"] == 0,
+                "glaucoma_probability_oof",
+            ].max(),
+            result.loc[
+                result["confidence_extreme_code"] == 1,
+                "glaucoma_probability_oof",
+            ].min(),
+        )
 
 
 if __name__ == "__main__":

@@ -58,9 +58,16 @@ variable codebook. It specifies the following core derivations:
 - Yes/no chronic-condition variables: 1 is yes, 2 is no, and missing/refused
   codes are null.
 
-The SAP leaves frailty and epigenetic age blank. It also describes a
-32-condition multimorbidity measure without supplying a complete 32-variable
-code list. This pipeline therefore produces
+The SAP leaves frailty and epigenetic age blank. A subsequent review of the
+baseline phenotype dictionary and release header identified six already
+derived methylation outputs in
+`2209017_UOttawa_EFreeman_Baseline_CoPv7_Qx_CANUE_PA_BS`: `DNAmAge_COM`,
+`AgeAccelerationDifference_COM`, `AgeAccelerationResidual_COM`, `IEAA_COM`,
+`EEAA_COM`, and `Hannum_Age_COM`. The pipeline parses those released values;
+it does not reconstruct clocks from raw DNA or CpG measurements.
+
+The SAP also describes a 32-condition multimorbidity measure without supplying
+a complete 32-variable code list. This pipeline therefore produces
 `multimorbidity_selected_count` only from the conditions explicitly mapped in
 the supplied table. It does not mislabel that result as the official
 32-condition score.
@@ -96,7 +103,8 @@ Important dictionary findings:
 - Follow-up 2 sampling strata is `WGHTS_GEOSTRATA_TRF2` or
   `WGHTS_GEOSTRATA_COF2` (plural `GEOSTRATA`), correcting the SAP spelling.
 - No epigenetic-age, methylation, `ADM_GWAS_COM`, or PSU variable is defined in
-  the workbook.
+  the Follow-up 2 workbook. The derived epigenetic fields are baseline-only and
+  come from the separate baseline phenotype release.
 
 ### Genome-wide genetics PDF
 
@@ -329,9 +337,11 @@ and inconclusive codes are converted to null before derivation.
 
 - **Frailty:** choose a validated CLSA phenotype and publish its item list,
   missing-item rule, direction, and cut points.
-- **Epigenetic age:** requires methylation data, preprocessing, clock choice,
-  cell-composition handling, and a definition such as age acceleration residual.
-  SNP genotypes alone do not provide epigenetic age.
+- **New epigenetic clock calculation:** the pipeline does not recalculate a
+  clock from CpG-level methylation or SNP genotypes. It preserves the six
+  released baseline derivatives, including the residual measure as the
+  prespecified universal acceleration outcome, and audits the released
+  `DNAmAge - chronological age` difference without overwriting it.
 - **Education attainment:** join the baseline `ED_UDR04_COM` release or a
   steward-approved harmonized replacement.
 - **Income quartile:** Follow-up 2 provides bands. A within-sample `ntile(4)`
@@ -529,9 +539,12 @@ readiness flag, not the final statistical complete-case definition.
 - *clsa_gwas_v3.pdf* - CLSA genome-wide release formats, identifiers, QC, PCA,
   relatedness, and imputation details.
 - *README (2).md* - exact genotype payloads excluded from the Volume upload.
+- Baseline phenotype release dictionary/header - released DNAmAge, acceleration
+  difference/residual, IEAA, EEAA, and Hannum-age fields.
 
 These sources are sufficient to build the extraction and linkage framework.
-They are not sufficient to finalize frailty, epigenetic age, the official
-32-condition multimorbidity score, survey PSU, the Follow-up 2 acuity scale, or
-a retinal-age image model. Those items must be resolved and versioned before
-confirmatory analysis.
+They are sufficient to parse the released baseline epigenetic derivatives but
+not to reproduce them from raw methylation. They are not sufficient to finalize
+frailty, the official 32-condition multimorbidity score, survey PSU, the
+Follow-up 2 acuity scale, or a retinal-age image model. Those items must be
+resolved and versioned before confirmatory analysis.
