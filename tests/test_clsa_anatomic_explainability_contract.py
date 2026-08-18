@@ -58,6 +58,14 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
         self.assertIn("malloc_trim(0)", self.source)
         self.assertIn("checkpointed_incomplete", self.source)
 
+    def test_completed_batch_parquets_use_a_no_recompute_fast_path(self):
+        self.assertIn("all_batch_parquets_present", self.source)
+        self.assertIn("completed_run_loaded = True", self.source)
+        self.assertIn("loaded_from_complete_batch_parquets", self.source)
+        self.assertIn("anatomy inference and checkpoint republishing", self.source)
+        self.assertIn("if completed_run_loaded", self.source)
+        self.assertIn("consolidated_is_current", self.source)
+
     def test_configuration_is_self_contained_and_paths_are_fixed(self):
         hardcoded_block = self.source.split(
             "# This cell is deliberately self-contained", 1

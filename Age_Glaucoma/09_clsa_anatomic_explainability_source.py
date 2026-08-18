@@ -730,8 +730,16 @@ ordered = clsa_images.reset_index(drop=True)
 expected_image_keys = set(ordered["image_key"].astype(str))
 completed_manifest_paths = []
 n_batches = math.ceil(len(ordered) / segmentation_batch_size)
+expected_manifest_paths = [
+    batch_root
+    / f"batch_{start:07d}_{min(start + segmentation_batch_size, len(ordered)):07d}"
+    / "anatomic_explainability.parquet"
+    for start in range(0, len(ordered), segmentation_batch_size)
+]
 completed_images = 0
 new_batches_this_run = 0
+completed_run_loaded = False
+image_anatomy = None
 pipeline_started = time.perf_counter()
 print(
     f"Anatomy plan: {len(ordered):,} images in {n_batches:,} durable batches "
@@ -739,8 +747,67 @@ print(
     f"{max_new_batches_per_run or 'all'} new batches",
     flush=True,
 )
+
+# Completed runs take a single fast path. Presence alone is not trusted: the
+# batch Parquets must consolidate to exactly one row for every current image
+# key and retain the columns required by downstream inference. Masks and
+# overlays are checked later only where those artifacts are actually consumed.
+all_batch_parquets_present = resume_segmentation and all(
+    path.is_file() and path.stat().st_size > 0
+    for path in expected_manifest_paths
+)
+if all_batch_parquets_present:
+    completed_candidate = consolidate_batch_manifests(
+        expected_manifest_paths,
+        expected_image_keys,
+    )
+    required_completed_columns = {
+        "image_key",
+        "mask_path",
+        "overlay_path",
+        "fit_source_commit",
+        "anatomy_valid",
+        "vessels_positive_enrichment",
+        "optic_disc_roi_positive_enrichment",
+        "fovea_roi_positive_enrichment",
+    }
+    if run_targeted_occlusion:
+        required_completed_columns.add(
+            "optic_disc_roi_specific_occlusion_drop"
+        )
+    missing_completed_columns = required_completed_columns - set(
+        completed_candidate.columns
+    )
+    completed_keys = set(completed_candidate["image_key"].astype(str))
+    if missing_completed_columns:
+        raise ValueError(
+            "All anatomy batch Parquets are present, but the completed run is "
+            f"missing columns: {sorted(missing_completed_columns)}"
+        )
+    if (
+        len(completed_candidate) != len(ordered)
+        or completed_keys != expected_image_keys
+    ):
+        raise ValueError(
+            "All anatomy batch Parquets are present, but they do not exactly "
+            "cover the current CLSA image cohort. No anatomy was recomputed."
+        )
+    image_anatomy = completed_candidate
+    completed_manifest_paths = list(expected_manifest_paths)
+    completed_images = len(image_anatomy)
+    completed_run_loaded = True
+    print(
+        "All expected anatomy batch Parquets are present and valid: loaded "
+        f"{completed_images:,} rows from {n_batches:,} batches. Skipping "
+        "anatomy inference and checkpoint republishing.",
+        flush=True,
+    )
+
 for batch_index, start in enumerate(
-    range(0, len(ordered), segmentation_batch_size), start=1
+    []
+    if completed_run_loaded
+    else range(0, len(ordered), segmentation_batch_size),
+    start=1,
 ):
     stop = min(start + segmentation_batch_size, len(ordered))
     batch = ordered.iloc[start:stop].copy()
@@ -976,14 +1043,27 @@ for batch_index, start in enumerate(
         )
         break
 
-run_complete = len(completed_manifest_paths) == n_batches
-image_anatomy, checkpoint_state = publish_segmentation_checkpoint(
-    completed_manifest_paths,
-    expected_image_keys,
-    total_images=len(ordered),
-    total_batches=n_batches,
-    complete=run_complete,
-)
+run_complete = completed_run_loaded or len(completed_manifest_paths) == n_batches
+if completed_run_loaded:
+    checkpoint_state = {
+        "completed_images": int(len(image_anatomy)),
+        "total_images": int(len(ordered)),
+        "completed_batches": int(len(completed_manifest_paths)),
+        "total_batches": int(n_batches),
+        "complete": True,
+        "checkpoint_path": str(
+            checkpoint_root / "anatomic_explainability_checkpoint.parquet"
+        ),
+        "status": "loaded_from_complete_batch_parquets",
+    }
+else:
+    image_anatomy, checkpoint_state = publish_segmentation_checkpoint(
+        completed_manifest_paths,
+        expected_image_keys,
+        total_images=len(ordered),
+        total_batches=n_batches,
+        complete=run_complete,
+    )
 print(
     f"Anatomy run ended after {(time.perf_counter() - pipeline_started) / 60:.1f} "
     f"min; complete={run_complete}",
@@ -1004,10 +1084,37 @@ if not run_complete:
         )
     )
 
-write_frame(
-    image_anatomy,
-    segmentation_root / "clsa_anatomic_explainability_private.parquet",
+consolidated_anatomy_path = (
+    segmentation_root / "clsa_anatomic_explainability_private.parquet"
 )
+consolidated_is_current = False
+if consolidated_anatomy_path.is_file():
+    try:
+        saved_keys = pd.read_parquet(
+            consolidated_anatomy_path,
+            columns=["image_key"],
+        )["image_key"].astype(str)
+        consolidated_is_current = (
+            len(saved_keys) == len(ordered)
+            and not saved_keys.duplicated().any()
+            and set(saved_keys) == expected_image_keys
+        )
+    except Exception:
+        consolidated_is_current = False
+if completed_run_loaded and consolidated_is_current:
+    print(
+        "Consolidated anatomy Parquet already covers the current cohort; "
+        "leaving it unchanged and continuing to downstream analysis.",
+        flush=True,
+    )
+else:
+    local_consolidated_path = (
+        local_artifact_root
+        / f"clsa_anatomic_explainability_{os.getpid()}_{uuid.uuid4().hex}.parquet"
+    )
+    write_frame(image_anatomy, local_consolidated_path)
+    publish_local_artifact(local_consolidated_path, consolidated_anatomy_path)
+    local_consolidated_path.unlink(missing_ok=True)
 display(
     image_anatomy.groupby("glaucoma_label").agg(
         images=("image_path", "count"),
