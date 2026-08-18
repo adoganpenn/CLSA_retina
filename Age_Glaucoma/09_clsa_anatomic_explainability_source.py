@@ -40,6 +40,7 @@ import importlib
 import json
 import math
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -80,6 +81,7 @@ import importlib
 import json
 import math
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -435,33 +437,61 @@ def stable_key(value):
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:20]
 
 
+def artifact_digest(path, chunk_bytes=8 * 1024 * 1024):
+    """Return byte count and SHA-256 using ordinary Volume file access."""
+    total_bytes = 0
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_bytes)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            digest.update(chunk)
+    return total_bytes, digest.hexdigest()
+
+
 def publish_local_artifact(local_path, volume_path, retries=4):
-    """Publish a completed local artifact without seek-writing to a Volume."""
+    """Publish through the UC Volume FUSE path without ANY FILE privileges."""
     local_path = Path(local_path)
     volume_path = Path(volume_path)
     if not local_path.is_file() or local_path.stat().st_size < 1:
         raise OSError(f"Local artifact is absent or empty: {local_path}")
     volume_path.parent.mkdir(parents=True, exist_ok=True)
-    expected_bytes = int(local_path.stat().st_size)
-    source_uri = f"file:{local_path.resolve()}"
+    expected_bytes, expected_sha256 = artifact_digest(local_path)
+    if volume_path.is_file():
+        try:
+            if artifact_digest(volume_path) == (expected_bytes, expected_sha256):
+                return volume_path
+        except OSError:
+            pass
     last_error = None
     for attempt in range(1, retries + 1):
         partial_path = volume_path.with_name(
             f".{volume_path.name}.{uuid.uuid4().hex}.partial"
         )
         try:
-            dbutils.fs.cp(source_uri, str(partial_path), False)
-            if int(partial_path.stat().st_size) != expected_bytes:
+            with local_path.open("rb") as source_handle, partial_path.open(
+                "wb"
+            ) as destination_handle:
+                shutil.copyfileobj(
+                    source_handle,
+                    destination_handle,
+                    length=8 * 1024 * 1024,
+                )
+                destination_handle.flush()
+                os.fsync(destination_handle.fileno())
+            if artifact_digest(partial_path) != (expected_bytes, expected_sha256):
                 raise OSError("Incomplete temporary Volume artifact copy")
-            if volume_path.exists():
-                dbutils.fs.rm(str(volume_path), False)
-            dbutils.fs.mv(str(partial_path), str(volume_path), False)
+            os.replace(partial_path, volume_path)
+            if artifact_digest(volume_path) != (expected_bytes, expected_sha256):
+                raise OSError("Published Volume artifact failed verification")
             return volume_path
         except Exception as error:
             last_error = error
             try:
-                dbutils.fs.rm(str(partial_path), False)
-            except Exception:
+                partial_path.unlink(missing_ok=True)
+            except OSError:
                 pass
             if attempt < retries:
                 delay = 2 ** (attempt - 1)
@@ -1258,42 +1288,8 @@ registration_size = 256
 
 
 def publish_review_artifact(local_path, volume_path, retries=4):
-    """Publish a completed local artifact without seek-writing to a Volume."""
-    local_path = Path(local_path)
-    volume_path = Path(volume_path)
-    if not local_path.is_file() or local_path.stat().st_size < 1:
-        raise OSError(f"Local review artifact is absent or empty: {local_path}")
-    volume_path.parent.mkdir(parents=True, exist_ok=True)
-    expected_bytes = int(local_path.stat().st_size)
-    source_uri = f"file:{local_path.resolve()}"
-    last_error = None
-    for attempt in range(1, retries + 1):
-        partial_path = volume_path.with_name(
-            f".{volume_path.name}.{uuid.uuid4().hex}.partial"
-        )
-        try:
-            dbutils.fs.cp(source_uri, str(partial_path), False)
-            if int(partial_path.stat().st_size) != expected_bytes:
-                raise OSError("Incomplete temporary review artifact copy")
-            if volume_path.exists():
-                dbutils.fs.rm(str(volume_path), False)
-            dbutils.fs.mv(str(partial_path), str(volume_path), False)
-            return volume_path
-        except Exception as error:
-            last_error = error
-            try:
-                dbutils.fs.rm(str(partial_path), False)
-            except Exception:
-                pass
-            if attempt < retries:
-                delay = 2 ** (attempt - 1)
-                print(
-                    f"Review artifact publish {attempt}/{retries} failed; "
-                    f"retrying in {delay}s: {type(error).__name__}: {error}",
-                    flush=True,
-                )
-                time.sleep(delay)
-    raise OSError(f"Could not publish review artifact: {volume_path}") from last_error
+    """Use the same verified Volume publisher as anatomy checkpoints."""
+    return publish_local_artifact(local_path, volume_path, retries=retries)
 
 saved_image_anatomy_path = (
     segmentation_root / "clsa_anatomic_explainability_private.parquet"

@@ -37,6 +37,10 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
             self.source,
         )
         self.assertIn("def publish_local_artifact", self.source)
+        self.assertIn("shutil.copyfileobj", self.source)
+        self.assertIn("os.replace(partial_path, volume_path)", self.source)
+        self.assertIn("artifact_digest(volume_path)", self.source)
+        self.assertNotIn("dbutils.fs.cp", self.source)
         self.assertIn("local_mask_path", self.source)
         self.assertIn("local_overlay_path", self.source)
         self.assertIn("artifacts_ready", self.source)
