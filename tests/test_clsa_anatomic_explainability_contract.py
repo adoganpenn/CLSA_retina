@@ -42,8 +42,8 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
         self.assertIn("artifacts_ready", self.source)
 
     def test_long_run_has_consolidated_checkpoints_and_memory_bounds(self):
-        self.assertIn('dbutils.widgets.text("checkpoint_every_batches"', self.source)
-        self.assertIn('dbutils.widgets.text("max_new_batches_per_run"', self.source)
+        self.assertIn("checkpoint_every_batches = 25", self.source)
+        self.assertIn("max_new_batches_per_run = 100", self.source)
         self.assertIn("def publish_segmentation_checkpoint", self.source)
         self.assertIn("anatomic_explainability_checkpoint.parquet", self.source)
         self.assertIn("segmentation_progress.json", self.source)
@@ -53,6 +53,21 @@ class CLSAAnatomicExplainabilityContractTests(unittest.TestCase):
         self.assertIn("torch.cuda.empty_cache()", self.source)
         self.assertIn("malloc_trim(0)", self.source)
         self.assertIn("checkpointed_incomplete", self.source)
+
+    def test_configuration_is_self_contained_and_paths_are_fixed(self):
+        hardcoded_block = self.source.split(
+            "# This cell is deliberately self-contained", 1
+        )[1].split("module_root = repo_root", 1)[0]
+        self.assertIn("from pathlib import Path", hardcoded_block)
+        self.assertIn("import numpy as np", hardcoded_block)
+        self.assertIn(
+            '"/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"',
+            hardcoded_block,
+        )
+        self.assertIn('"clsa_retinal_aging/Age_Glaucoma"', hardcoded_block)
+        self.assertIn("resume_segmentation = True", hardcoded_block)
+        self.assertIn("run_targeted_occlusion = False", hardcoded_block)
+        self.assertNotIn('dbutils.widgets.get("repo_root")', hardcoded_block)
 
     def test_scope_is_clsa_only(self):
         self.assertIn('attribution_manifest["source"].astype(str) == "CLSA"', self.source)

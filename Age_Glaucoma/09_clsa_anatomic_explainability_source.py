@@ -62,94 +62,73 @@ if cv2.__version__ != "4.11.0":
     )
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("notebook08_root", "")
-dbutils.widgets.text("output_root", "")
-dbutils.widgets.text("fit_cache_dir", "")
-dbutils.widgets.text("segmentation_batch_size", "4")
-dbutils.widgets.text("checkpoint_every_batches", "25")
-dbutils.widgets.text("max_new_batches_per_run", "100")
-dbutils.widgets.text("maximum_images", "0")
-dbutils.widgets.dropdown("resume_segmentation", "true", ["true", "false"])
-dbutils.widgets.text("vessel_threshold", "0.5")
-dbutils.widgets.text("optic_disc_radius_scale", "0.20")
-dbutils.widgets.text("fovea_radius_scale", "0.20")
-dbutils.widgets.text("peripapillary_multiplier", "2.0")
-dbutils.widgets.text("vessel_dilation_px", "2")
-dbutils.widgets.text("permutations", "5000")
-dbutils.widgets.text("bootstrap_repetitions", "2000")
-dbutils.widgets.dropdown("run_targeted_occlusion", "false", ["false", "true"])
-dbutils.widgets.text("occlusion_controls", "5")
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.dropdown("allow_repo_clone", "true", ["true", "false"])
-dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
-dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "auto", ["auto", "cuda", "cpu"])
+# All reproducible paths and analysis parameters are fixed below. The only
+# intentionally temporary input is the gated-model credential, and it is not
+# written to the notebook or repository.
+try:
+    dbutils.widgets.get("hf_token")
+except Exception:
+    dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
+# This cell is deliberately self-contained so it is safe to run immediately
+# after dbutils.library.restartPython() or after a kernel recovery.
+from pathlib import Path
+import gc
+import hashlib
+import importlib
+import json
+import math
+import os
+import sys
+import time
+import uuid
+
+import cv2
+import joblib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from PIL import Image
+from scipy import ndimage
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
 age_glaucoma_root = Path(
-    dbutils.widgets.get("age_glaucoma_output_root").strip()
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
-
-
-def configured_path(widget_name, default):
-    value = dbutils.widgets.get(widget_name).strip()
-    return Path(value) if value else Path(default)
-
-
-notebook08_root = configured_path(
-    "notebook08_root",
-    age_glaucoma_root / "13_glaucoma_classifier_spatial_validation",
+notebook08_root = (
+    age_glaucoma_root / "13_glaucoma_classifier_spatial_validation"
 )
-output_root = configured_path(
-    "output_root",
-    age_glaucoma_root / "14_clsa_anatomic_explainability",
-)
-fit_cache_dir = configured_path(
-    "fit_cache_dir",
+output_root = age_glaucoma_root / "14_clsa_anatomic_explainability"
+fit_cache_dir = (
     age_glaucoma_root.parent
     / "model_checkpoints"
-    / "fundus_image_toolbox",
+    / "fundus_image_toolbox"
 )
-segmentation_batch_size = int(dbutils.widgets.get("segmentation_batch_size"))
-checkpoint_every_batches = int(
-    dbutils.widgets.get("checkpoint_every_batches")
-)
-max_new_batches_per_run = int(
-    dbutils.widgets.get("max_new_batches_per_run")
-)
-maximum_images = int(dbutils.widgets.get("maximum_images"))
-resume_segmentation = dbutils.widgets.get("resume_segmentation") == "true"
-vessel_threshold = float(dbutils.widgets.get("vessel_threshold"))
-optic_disc_radius_scale = float(
-    dbutils.widgets.get("optic_disc_radius_scale")
-)
-fovea_radius_scale = float(dbutils.widgets.get("fovea_radius_scale"))
-peripapillary_multiplier = float(
-    dbutils.widgets.get("peripapillary_multiplier")
-)
-vessel_dilation_px = int(dbutils.widgets.get("vessel_dilation_px"))
-permutations = int(dbutils.widgets.get("permutations"))
-bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
-run_targeted_occlusion = (
-    dbutils.widgets.get("run_targeted_occlusion") == "true"
-)
-occlusion_controls = int(dbutils.widgets.get("occlusion_controls"))
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-allow_repo_clone = dbutils.widgets.get("allow_repo_clone") == "true"
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
-device_requested = dbutils.widgets.get("device")
+
+segmentation_batch_size = 4
+checkpoint_every_batches = 25
+max_new_batches_per_run = 100
+maximum_images = 0
+resume_segmentation = True
+vessel_threshold = 0.5
+optic_disc_radius_scale = 0.20
+fovea_radius_scale = 0.20
+peripapillary_multiplier = 2.0
+vessel_dilation_px = 2
+permutations = 5000
+bootstrap_repetitions = 2000
+run_targeted_occlusion = False
+occlusion_controls = 5
+retfound_repo = None
+checkpoint_path = None
+allow_repo_clone = True
+allow_downloads = True
+device_requested = "auto"
 
 if (
     segmentation_batch_size < 1
