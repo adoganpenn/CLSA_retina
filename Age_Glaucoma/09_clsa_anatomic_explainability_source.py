@@ -34,6 +34,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 from pathlib import Path
+import gc
 import hashlib
 import importlib
 import json
@@ -74,6 +75,8 @@ dbutils.widgets.text("notebook08_root", "")
 dbutils.widgets.text("output_root", "")
 dbutils.widgets.text("fit_cache_dir", "")
 dbutils.widgets.text("segmentation_batch_size", "4")
+dbutils.widgets.text("checkpoint_every_batches", "25")
+dbutils.widgets.text("max_new_batches_per_run", "100")
 dbutils.widgets.text("maximum_images", "0")
 dbutils.widgets.dropdown("resume_segmentation", "true", ["true", "false"])
 dbutils.widgets.text("vessel_threshold", "0.5")
@@ -119,6 +122,12 @@ fit_cache_dir = configured_path(
     / "fundus_image_toolbox",
 )
 segmentation_batch_size = int(dbutils.widgets.get("segmentation_batch_size"))
+checkpoint_every_batches = int(
+    dbutils.widgets.get("checkpoint_every_batches")
+)
+max_new_batches_per_run = int(
+    dbutils.widgets.get("max_new_batches_per_run")
+)
 maximum_images = int(dbutils.widgets.get("maximum_images"))
 resume_segmentation = dbutils.widgets.get("resume_segmentation") == "true"
 vessel_threshold = float(dbutils.widgets.get("vessel_threshold"))
@@ -142,8 +151,16 @@ allow_repo_clone = dbutils.widgets.get("allow_repo_clone") == "true"
 allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
 device_requested = dbutils.widgets.get("device")
 
-if segmentation_batch_size < 1 or maximum_images < 0:
-    raise ValueError("Batch size must be positive and maximum_images nonnegative")
+if (
+    segmentation_batch_size < 1
+    or checkpoint_every_batches < 1
+    or max_new_batches_per_run < 0
+    or maximum_images < 0
+):
+    raise ValueError(
+        "Batch/checkpoint sizes must be positive; run and image limits must "
+        "be nonnegative"
+    )
 if not 0 < vessel_threshold < 1:
     raise ValueError("vessel_threshold must lie in (0, 1)")
 if not 0 < optic_disc_radius_scale <= 0.5:
@@ -408,12 +425,14 @@ if run_targeted_occlusion:
 # COMMAND ----------
 segmentation_root = output_root / "01_image_anatomy"
 batch_root = segmentation_root / "batches"
+checkpoint_root = segmentation_root / "checkpoints"
 mask_root = segmentation_root / "masks"
 overlay_root = output_root / "02_overlays_private"
 statistics_root = output_root / "03_statistics"
 figure_root = output_root / "04_figures"
 for path in (
     batch_root,
+    checkpoint_root,
     mask_root,
     overlay_root,
     statistics_root,
@@ -474,6 +493,93 @@ def publish_local_artifact(local_path, volume_path, retries=4):
                 )
                 time.sleep(delay)
     raise OSError(f"Could not publish artifact: {volume_path}") from last_error
+
+
+def consolidate_batch_manifests(manifest_paths, expected_image_keys):
+    """Read only completed batch manifests and validate current-cohort identity."""
+    frames = [pd.read_parquet(path) for path in manifest_paths]
+    if not frames:
+        return pd.DataFrame()
+    consolidated = pd.concat(frames, ignore_index=True, sort=False)
+    if "image_key" not in consolidated.columns:
+        raise ValueError("A completed anatomy batch lacks image_key")
+    consolidated["image_key"] = consolidated["image_key"].astype(str)
+    if consolidated["image_key"].duplicated().any():
+        duplicated = int(consolidated["image_key"].duplicated().sum())
+        raise ValueError(
+            f"Completed anatomy batches contain {duplicated} duplicate image keys"
+        )
+    unexpected = set(consolidated["image_key"]) - set(expected_image_keys)
+    if unexpected:
+        raise ValueError(
+            "Completed anatomy batches contain images outside the current "
+            f"cohort ({len(unexpected)} unexpected keys)"
+        )
+    return consolidated
+
+
+def publish_segmentation_checkpoint(
+    manifest_paths,
+    expected_image_keys,
+    *,
+    total_images,
+    total_batches,
+    complete,
+):
+    """Publish a consolidated Parquet checkpoint and an aggregate progress file."""
+    checkpoint_frame = consolidate_batch_manifests(
+        manifest_paths,
+        expected_image_keys,
+    )
+    local_checkpoint = (
+        local_artifact_root
+        / f"anatomic_checkpoint_{os.getpid()}_{uuid.uuid4().hex}.parquet"
+    )
+    volume_checkpoint = (
+        checkpoint_root / "anatomic_explainability_checkpoint.parquet"
+    )
+    write_frame(checkpoint_frame, local_checkpoint)
+    publish_local_artifact(local_checkpoint, volume_checkpoint)
+    local_checkpoint.unlink(missing_ok=True)
+
+    state = {
+        "completed_images": int(len(checkpoint_frame)),
+        "total_images": int(total_images),
+        "completed_batches": int(len(manifest_paths)),
+        "total_batches": int(total_batches),
+        "complete": bool(complete),
+        "checkpoint_path": str(volume_checkpoint),
+        "updated_unix_seconds": float(time.time()),
+    }
+    local_state = (
+        local_artifact_root
+        / f"segmentation_progress_{os.getpid()}_{uuid.uuid4().hex}.json"
+    )
+    volume_state = checkpoint_root / "segmentation_progress.json"
+    write_json(state, local_state)
+    publish_local_artifact(local_state, volume_state)
+    local_state.unlink(missing_ok=True)
+    print(
+        "Checkpoint published: "
+        f"{len(checkpoint_frame):,}/{total_images:,} images across "
+        f"{len(manifest_paths):,}/{total_batches:,} batches",
+        flush=True,
+    )
+    return checkpoint_frame, state
+
+
+def release_batch_memory():
+    """Release Python, plotting, Torch, and glibc caches between model batches."""
+    plt.close("all")
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 def sigmoid(value):
@@ -612,13 +718,16 @@ def save_overlay(rgb, attribution_grid, masks, label, output_path):
 
 # COMMAND ----------
 ordered = clsa_images.reset_index(drop=True)
-batch_manifests = []
+expected_image_keys = set(ordered["image_key"].astype(str))
+completed_manifest_paths = []
 n_batches = math.ceil(len(ordered) / segmentation_batch_size)
 completed_images = 0
+new_batches_this_run = 0
 pipeline_started = time.perf_counter()
 print(
     f"Anatomy plan: {len(ordered):,} images in {n_batches:,} durable batches "
-    f"of at most {segmentation_batch_size}",
+    f"of at most {segmentation_batch_size}; this kernel will process at most "
+    f"{max_new_batches_per_run or 'all'} new batches",
     flush=True,
 )
 for batch_index, start in enumerate(
@@ -674,7 +783,8 @@ for batch_index, start in enumerate(
                 f"{len(ordered):,}",
                 flush=True,
             )
-            batch_manifests.append(existing)
+            completed_manifest_paths.append(manifest_path)
+            del existing, batch
             continue
     batch_started = time.perf_counter()
     print(
@@ -805,8 +915,9 @@ for batch_index, start in enumerate(
     write_frame(batch_manifest, local_manifest_path)
     publish_local_artifact(local_manifest_path, manifest_path)
     local_manifest_path.unlink(missing_ok=True)
-    batch_manifests.append(batch_manifest)
+    completed_manifest_paths.append(manifest_path)
     completed_images += len(batch_manifest)
+    new_batches_this_run += 1
     print(
         f"[anatomy {batch_index}/{n_batches}] saved {len(batch_manifest)} rows; "
         f"valid={int(batch_manifest['anatomy_valid'].sum())}; "
@@ -815,12 +926,75 @@ for batch_index, start in enumerate(
         flush=True,
     )
 
+    del (
+        processed_images,
+        coordinates,
+        vessel_predictions,
+        rows,
+        batch_manifest,
+        batch,
+        rgb,
+        vessel_mask,
+        proxies,
+        masks,
+        anatomy_metadata,
+        attribution_grid,
+        region_metrics,
+        occlusion,
+    )
+    release_batch_memory()
+
+    if new_batches_this_run % checkpoint_every_batches == 0:
+        checkpoint_frame, checkpoint_state = publish_segmentation_checkpoint(
+            completed_manifest_paths,
+            expected_image_keys,
+            total_images=len(ordered),
+            total_batches=n_batches,
+            complete=len(completed_manifest_paths) == n_batches,
+        )
+        del checkpoint_frame, checkpoint_state
+        release_batch_memory()
+
+    if (
+        max_new_batches_per_run > 0
+        and new_batches_this_run >= max_new_batches_per_run
+        and len(completed_manifest_paths) < n_batches
+    ):
+        print(
+            "Reached max_new_batches_per_run; publishing a clean restart "
+            "checkpoint before stopping.",
+            flush=True,
+        )
+        break
+
+run_complete = len(completed_manifest_paths) == n_batches
+image_anatomy, checkpoint_state = publish_segmentation_checkpoint(
+    completed_manifest_paths,
+    expected_image_keys,
+    total_images=len(ordered),
+    total_batches=n_batches,
+    complete=run_complete,
+)
 print(
-    f"Anatomy batches complete in {(time.perf_counter() - pipeline_started) / 60:.1f} min",
+    f"Anatomy run ended after {(time.perf_counter() - pipeline_started) / 60:.1f} "
+    f"min; complete={run_complete}",
     flush=True,
 )
+if not run_complete:
+    dbutils.notebook.exit(
+        json.dumps(
+            {
+                **checkpoint_state,
+                "status": "checkpointed_incomplete",
+                "next_action": (
+                    "Rerun notebook 09 with resume_segmentation=true; completed "
+                    "batches will be skipped."
+                ),
+            },
+            indent=2,
+        )
+    )
 
-image_anatomy = pd.concat(batch_manifests, ignore_index=True)
 write_frame(
     image_anatomy,
     segmentation_root / "clsa_anatomic_explainability_private.parquet",
