@@ -40,56 +40,7 @@ import torch
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "source_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_image_manifest",
-)
-dbutils.widgets.dropdown(
-    "source_format", "delta", ["delta", "parquet", "csv"]
-)
-dbutils.widgets.text(
-    "age_source_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/sap_fundus_image_analysis",
-)
-dbutils.widgets.dropdown(
-    "attach_visit_matched_age", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "require_nonzero_age_coverage", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "exclude_images_without_age", "true", ["true", "false"]
-)
-dbutils.widgets.text(
-    "output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_retfound_smoke",
-)
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
-dbutils.widgets.text("batch_size", "2")
-dbutils.widgets.text("max_images", "8")
-dbutils.widgets.dropdown("run_all_images", "false", ["false", "true"])
-dbutils.widgets.text("pipeline_batch_size", "500")
-dbutils.widgets.dropdown("resume_batches", "true", ["true", "false"])
-dbutils.widgets.dropdown("save_preprocessed", "true", ["true", "false"])
-dbutils.widgets.dropdown("force_embeddings", "true", ["true", "false"])
-dbutils.widgets.dropdown("train_age_head", "false", ["false", "true"])
-dbutils.widgets.text("existing_age_model", "")
-dbutils.widgets.dropdown("run_explainability", "false", ["false", "true"])
-dbutils.widgets.text("n_explain", "8")
-dbutils.widgets.dropdown(
-    "explainability_method", "exact", ["exact", "occlusion"]
-)
 
 # COMMAND ----------
 # MAGIC %md
@@ -105,36 +56,36 @@ dbutils.widgets.dropdown(
 # MAGIC `run_explainability=false` until an age-head artifact is available.
 
 # COMMAND ----------
-repo_root = dbutils.widgets.get("repo_root").rstrip("/")
-source_path = dbutils.widgets.get("source_path").strip()
-source_format = dbutils.widgets.get("source_format")
-age_source_path = dbutils.widgets.get("age_source_path").strip()
-attach_visit_matched_age = (
-    dbutils.widgets.get("attach_visit_matched_age") == "true"
+from pathlib import Path
+
+repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+derived_root = (
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging"
 )
-require_nonzero_age_coverage = (
-    dbutils.widgets.get("require_nonzero_age_coverage") == "true"
-)
-exclude_images_without_age = (
-    dbutils.widgets.get("exclude_images_without_age") == "true"
-)
-output_root = Path(dbutils.widgets.get("output_root").strip())
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
-device_requested = dbutils.widgets.get("device")
-batch_size = int(dbutils.widgets.get("batch_size"))
-max_images = int(dbutils.widgets.get("max_images"))
-run_all_images = dbutils.widgets.get("run_all_images") == "true"
-pipeline_batch_size = int(dbutils.widgets.get("pipeline_batch_size"))
-resume_batches = dbutils.widgets.get("resume_batches") == "true"
-save_preprocessed = dbutils.widgets.get("save_preprocessed") == "true"
-force_embeddings = dbutils.widgets.get("force_embeddings") == "true"
-should_train_age_head = dbutils.widgets.get("train_age_head") == "true"
-existing_age_model = dbutils.widgets.get("existing_age_model").strip() or None
-should_explain = dbutils.widgets.get("run_explainability") == "true"
-n_explain = int(dbutils.widgets.get("n_explain"))
-explainability_method = dbutils.widgets.get("explainability_method")
+source_path = f"{derived_root}/fundus_image_manifest"
+source_format = "delta"
+age_source_path = f"{derived_root}/sap_fundus_image_analysis"
+attach_visit_matched_age = True
+require_nonzero_age_coverage = True
+exclude_images_without_age = True
+output_root = Path(f"{derived_root}/fundus_retfound_smoke")
+retfound_repo = None
+checkpoint_path = None
+allow_downloads = True
+device_requested = "cuda"
+batch_size = 2
+max_images = 8
+run_all_images = False
+pipeline_batch_size = 500
+resume_batches = True
+save_preprocessed = True
+force_embeddings = True
+should_train_age_head = False
+existing_age_model = None
+should_explain = False
+n_explain = 8
+explainability_method = "exact"
 expected_embedding_dim = 1024
 
 if pipeline_batch_size < 1:

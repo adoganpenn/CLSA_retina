@@ -42,112 +42,58 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("clsa_embedding_cache_path", "")
-dbutils.widgets.text("clsa_quality_path", "")
-dbutils.widgets.text("ocular_screen_path", "")
-dbutils.widgets.text("sap_path", "")
-dbutils.widgets.text("healthy_images_path", "")
-dbutils.widgets.text("healthy_oof_path", "")
-dbutils.widgets.text("healthy_model_path", "")
-dbutils.widgets.text("zeiss_embeddings_path", "")
-dbutils.widgets.dropdown(
-    "strict_never_glaucoma_controls", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "exclude_age_model_training_overlap", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "exclude_selected_systemic_comorbidity", "false", ["false", "true"]
-)
-dbutils.widgets.dropdown(
-    "require_complete_glaucoma_embeddings", "true", ["true", "false"]
-)
-dbutils.widgets.text("age_caliper_years", "1.0")
-dbutils.widgets.text("bootstrap_repetitions", "5000")
-dbutils.widgets.dropdown(
-    "harmonization_mode", "location_scale", ["location_scale", "location"]
-)
-dbutils.widgets.text("harmonization_ridge", "0.000001")
-dbutils.widgets.text("domain_classifier_max_per_source", "5000")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
 age_glaucoma_root = Path(
-    dbutils.widgets.get("age_glaucoma_output_root").strip()
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
 derived_root = age_glaucoma_root.parent
-
-
-def configured_path(widget_name, default):
-    value = dbutils.widgets.get(widget_name).strip()
-    return value or str(default)
-
-
-clsa_embedding_cache_path = configured_path(
-    "clsa_embedding_cache_path",
-    age_glaucoma_root / "00_inputs" / "clsa_embeddings_delta",
+clsa_embedding_cache_path = str(
+    age_glaucoma_root / "00_inputs" / "clsa_embeddings_delta"
 )
-clsa_quality_path = configured_path(
-    "clsa_quality_path",
-    derived_root / "fundus_retfound" / "01_quality" / "fundus_quality_manifest.parquet",
+clsa_quality_path = str(
+    derived_root
+    / "fundus_retfound"
+    / "01_quality"
+    / "fundus_quality_manifest.parquet"
 )
-ocular_screen_path = configured_path(
-    "ocular_screen_path",
-    age_glaucoma_root / "03_clsa_controls" / "ocular_screen_delta",
+ocular_screen_path = str(
+    age_glaucoma_root / "03_clsa_controls" / "ocular_screen_delta"
 )
-sap_path = configured_path(
-    "sap_path",
-    derived_root / "sap_questionnaire_visit",
+sap_path = str(derived_root / "sap_questionnaire_visit")
+healthy_images_path = str(
+    age_glaucoma_root / "03_clsa_controls" / "eligible_images_delta"
 )
-healthy_images_path = configured_path(
-    "healthy_images_path",
-    age_glaucoma_root / "03_clsa_controls" / "eligible_images_delta",
-)
-healthy_oof_path = configured_path(
-    "healthy_oof_path",
+healthy_oof_path = str(
     age_glaucoma_root
     / "07_retinal_age_inference"
-    / "CLSA_healthy_participant_visit_oof.parquet",
+    / "CLSA_healthy_participant_visit_oof.parquet"
 )
-healthy_model_path = configured_path(
-    "healthy_model_path",
-    age_glaucoma_root / "06_CLSA_healthy_model" / "CLSA_healthy.joblib",
+healthy_model_path = str(
+    age_glaucoma_root / "06_CLSA_healthy_model" / "CLSA_healthy.joblib"
 )
-zeiss_embeddings_path = configured_path(
-    "zeiss_embeddings_path",
+zeiss_embeddings_path = str(
     age_glaucoma_root
     / "01_zeiss_source_cohort"
-    / "zeiss_embedded_images.parquet",
+    / "zeiss_embedded_images.parquet"
 )
 
-strict_never_glaucoma_controls = (
-    dbutils.widgets.get("strict_never_glaucoma_controls") == "true"
-)
-exclude_age_model_training_overlap = (
-    dbutils.widgets.get("exclude_age_model_training_overlap") == "true"
-)
-exclude_selected_systemic_comorbidity = (
-    dbutils.widgets.get("exclude_selected_systemic_comorbidity") == "true"
-)
-require_complete_glaucoma_embeddings = (
-    dbutils.widgets.get("require_complete_glaucoma_embeddings") == "true"
-)
-age_caliper_years = float(dbutils.widgets.get("age_caliper_years"))
-bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
-harmonization_mode = dbutils.widgets.get("harmonization_mode")
-harmonization_ridge = float(dbutils.widgets.get("harmonization_ridge"))
-domain_classifier_max_per_source = int(
-    dbutils.widgets.get("domain_classifier_max_per_source")
-)
+strict_never_glaucoma_controls = True
+exclude_age_model_training_overlap = True
+exclude_selected_systemic_comorbidity = False
+require_complete_glaucoma_embeddings = True
+age_caliper_years = 1.0
+bootstrap_repetitions = 5000
+harmonization_mode = "location_scale"
+harmonization_ridge = 0.000001
+domain_classifier_max_per_source = 5000
 
 if age_caliper_years < 0:
     raise ValueError("age_caliper_years cannot be negative")

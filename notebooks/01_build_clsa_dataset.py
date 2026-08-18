@@ -24,91 +24,34 @@ from pyspark.sql import functions as F
 # COMMAND ----------
 
 dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "volume_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset",
-)
-dbutils.widgets.text(
-    "output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/clsa_retinal_aging",
-)
-dbutils.widgets.text(
-    "dictionary_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/"
-    "follow-up2_data_dictionaries_tracking_and_comprehensive_v2.xlsx",
-)
-dbutils.widgets.text(
-    "genomics_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/Genomics3_clsa",
-)
-dbutils.widgets.text(
-    "genomics_readme_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/"
-    "Genomics3_clsa/README.md",
-)
-dbutils.widgets.dropdown(
-    "inspect_zip_archives", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "generate_dataset_readme", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "extract_fundus_archives", "false", ["false", "true"]
-)
-dbutils.widgets.text(
     "archive_password", "", "Archive password (temporary; extraction only)"
 )
-dbutils.widgets.text("extraction_batch_size", "500")
-dbutils.widgets.text("max_images_per_release_per_run", "5000")
-dbutils.widgets.text("extraction_progress_every", "100")
-dbutils.widgets.dropdown(
-    "restart_fundus_extraction", "false", ["false", "true"]
-)
-dbutils.widgets.text("image_root", "")
-dbutils.widgets.dropdown(
-    "build_questionnaire", "false", ["false", "true"]
-)
-dbutils.widgets.text("tracking_data_path", "")
-dbutils.widgets.text("comprehensive_data_path", "")
-dbutils.widgets.text("participant_genetics_crosswalk_path", "")
-dbutils.widgets.text("crosswalk_participant_id_column", "participant_id")
-dbutils.widgets.text("crosswalk_gwas_id_column", "ADM_GWAS_COM")
 
 # COMMAND ----------
 
-repo_root = dbutils.widgets.get("repo_root").rstrip("/")
-volume_root = dbutils.widgets.get("volume_root").rstrip("/")
-output_root = dbutils.widgets.get("output_root").rstrip("/")
-dictionary_path = dbutils.widgets.get("dictionary_path").strip()
-genomics_root = dbutils.widgets.get("genomics_root").rstrip("/")
-genomics_readme_path = dbutils.widgets.get("genomics_readme_path").strip()
-inspect_archives = dbutils.widgets.get("inspect_zip_archives") == "true"
-generate_readme = dbutils.widgets.get("generate_dataset_readme") == "true"
-extract_archives = dbutils.widgets.get("extract_fundus_archives") == "true"
-extraction_batch_size = int(dbutils.widgets.get("extraction_batch_size"))
-max_images_per_release_per_run = int(
-    dbutils.widgets.get("max_images_per_release_per_run")
+repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+volume_root = "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset"
+output_root = f"{volume_root}/derived/clsa_retinal_aging"
+dictionary_path = (
+    f"{volume_root}/"
+    "follow-up2_data_dictionaries_tracking_and_comprehensive_v2.xlsx"
 )
-extraction_progress_every = int(
-    dbutils.widgets.get("extraction_progress_every")
-)
-restart_fundus_extraction = (
-    dbutils.widgets.get("restart_fundus_extraction") == "true"
-)
-image_root = dbutils.widgets.get("image_root").strip()
-build_questionnaire = dbutils.widgets.get("build_questionnaire") == "true"
-tracking_data_path = dbutils.widgets.get("tracking_data_path").strip()
-comprehensive_data_path = dbutils.widgets.get("comprehensive_data_path").strip()
-crosswalk_path = dbutils.widgets.get(
-    "participant_genetics_crosswalk_path"
-).strip()
-crosswalk_participant_id = dbutils.widgets.get(
-    "crosswalk_participant_id_column"
-)
-crosswalk_gwas_id = dbutils.widgets.get("crosswalk_gwas_id_column")
+genomics_root = f"{volume_root}/Genomics3_clsa"
+genomics_readme_path = f"{genomics_root}/README.md"
+inspect_archives = True
+generate_readme = True
+extract_archives = False
+extraction_batch_size = 500
+max_images_per_release_per_run = 5000
+extraction_progress_every = 100
+restart_fundus_extraction = False
+image_root = ""
+build_questionnaire = False
+tracking_data_path = ""
+comprehensive_data_path = ""
+crosswalk_path = ""
+crosswalk_participant_id = "participant_id"
+crosswalk_gwas_id = "ADM_GWAS_COM"
 
 src_path = f"{repo_root}/src"
 if src_path not in sys.path:

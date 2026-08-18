@@ -38,64 +38,31 @@ import numpy as np
 import pandas as pd
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("three_cohort_root", "")
-dbutils.widgets.text("healthy_model_path", "")
-dbutils.widgets.text("output_root", "")
-dbutils.widgets.text("crossfit_folds", "5")
-dbutils.widgets.text("age_caliper_years", "1.0")
-dbutils.widgets.text("bootstrap_repetitions", "5000")
-dbutils.widgets.text("harmonization_ridge", "0.000001")
-dbutils.widgets.text("domain_classifier_max_per_source", "5000")
-dbutils.widgets.text("maximum_acceptable_domain_auc", "0.60")
-dbutils.widgets.text("maximum_acceptable_p90_feature_smd", "0.10")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
 age_glaucoma_root = Path(
-    dbutils.widgets.get("age_glaucoma_output_root").strip()
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
-
-
-def configured_path(widget_name, default):
-    value = dbutils.widgets.get(widget_name).strip()
-    return Path(value) if value else Path(default)
-
-
-three_cohort_root = configured_path(
-    "three_cohort_root",
-    age_glaucoma_root / "11_three_cohort_glaucoma",
-)
+three_cohort_root = age_glaucoma_root / "11_three_cohort_glaucoma"
 cohort_root = three_cohort_root / "01_cohort"
-healthy_model_path = configured_path(
-    "healthy_model_path",
-    age_glaucoma_root / "06_CLSA_healthy_model" / "CLSA_healthy.joblib",
+healthy_model_path = (
+    age_glaucoma_root / "06_CLSA_healthy_model" / "CLSA_healthy.joblib"
 )
-output_root = configured_path(
-    "output_root",
-    age_glaucoma_root / "12_cross_device_harmonization_validation",
-)
-crossfit_folds = int(dbutils.widgets.get("crossfit_folds"))
-age_caliper_years = float(dbutils.widgets.get("age_caliper_years"))
-bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
-harmonization_ridge = float(dbutils.widgets.get("harmonization_ridge"))
-domain_classifier_max_per_source = int(
-    dbutils.widgets.get("domain_classifier_max_per_source")
-)
-maximum_acceptable_domain_auc = float(
-    dbutils.widgets.get("maximum_acceptable_domain_auc")
-)
-maximum_acceptable_p90_feature_smd = float(
-    dbutils.widgets.get("maximum_acceptable_p90_feature_smd")
-)
+output_root = age_glaucoma_root / "12_cross_device_harmonization_validation"
+crossfit_folds = 5
+age_caliper_years = 1.0
+bootstrap_repetitions = 5000
+harmonization_ridge = 0.000001
+domain_classifier_max_per_source = 5000
+maximum_acceptable_domain_auc = 0.60
+maximum_acceptable_p90_feature_smd = 0.10
 
 if crossfit_folds < 3:
     raise ValueError("crossfit_folds must be at least 3")

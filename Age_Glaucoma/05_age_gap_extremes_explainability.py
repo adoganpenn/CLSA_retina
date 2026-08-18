@@ -41,66 +41,38 @@ from PIL import Image
 from scipy import ndimage, stats
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.text(
-    "checkpoint_cache_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth",
-)
-dbutils.widgets.dropdown("allow_downloads", "false", ["false", "true"])
-dbutils.widgets.dropdown("allow_repo_clone", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
-dbutils.widgets.text("extreme_quantile", "0.10")
-dbutils.widgets.dropdown(
-    "selection_metric", "raw_gap", ["raw_gap", "age_adjusted_gap"]
-)
-dbutils.widgets.text("pipeline_batch_size", "25")
-dbutils.widgets.dropdown("resume_batches", "true", ["true", "false"])
-dbutils.widgets.text("max_participants_per_group", "0")
-dbutils.widgets.text("n_permutations", "2000")
-dbutils.widgets.text("age_match_caliper_years", "3")
-dbutils.widgets.text("embedding_cosine_threshold", "0.99")
-dbutils.widgets.dropdown("align_left_eyes", "true", ["true", "false"])
-dbutils.widgets.text("n_examples_per_group", "2")
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
-output_root = Path(dbutils.widgets.get("age_glaucoma_output_root").strip())
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-checkpoint_cache_value = dbutils.widgets.get("checkpoint_cache_path").strip()
-checkpoint_cache_path = Path(checkpoint_cache_value) if checkpoint_cache_value else None
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
-allow_repo_clone = dbutils.widgets.get("allow_repo_clone") == "true"
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
+output_root = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
+)
+retfound_repo = None
+checkpoint_path = None
+checkpoint_cache_path = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth"
+)
+allow_downloads = False
+allow_repo_clone = True
 hf_token = dbutils.widgets.get("hf_token").strip()
-device_requested = dbutils.widgets.get("device")
-extreme_quantile = float(dbutils.widgets.get("extreme_quantile"))
-selection_metric = dbutils.widgets.get("selection_metric")
-pipeline_batch_size = int(dbutils.widgets.get("pipeline_batch_size"))
-resume_batches = dbutils.widgets.get("resume_batches") == "true"
-max_participants_per_group = int(
-    dbutils.widgets.get("max_participants_per_group")
-)
-n_permutations = int(dbutils.widgets.get("n_permutations"))
-age_match_caliper_years = float(
-    dbutils.widgets.get("age_match_caliper_years")
-)
-embedding_cosine_threshold = float(
-    dbutils.widgets.get("embedding_cosine_threshold")
-)
-align_left_eyes = dbutils.widgets.get("align_left_eyes") == "true"
-n_examples_per_group = int(dbutils.widgets.get("n_examples_per_group"))
+device_requested = "cuda"
+extreme_quantile = 0.10
+selection_metric = "raw_gap"
+pipeline_batch_size = 25
+resume_batches = True
+max_participants_per_group = 0
+n_permutations = 2000
+age_match_caliper_years = 3.0
+embedding_cosine_threshold = 0.99
+align_left_eyes = True
+n_examples_per_group = 2
 
 if not math.isclose(extreme_quantile, 0.10, rel_tol=0, abs_tol=1e-12):
     raise ValueError(

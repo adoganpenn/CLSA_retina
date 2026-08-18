@@ -35,62 +35,30 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "sap_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/sap_questionnaire_visit",
-)
-dbutils.widgets.text(
-    "embedding_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_retfound/02_embeddings/"
-    "retfound_embeddings_delta",
-)
-dbutils.widgets.text(
-    "retinal_age_prediction_path",
-    "",
-    "Optional explicit prediction Parquet path",
-)
-dbutils.widgets.text(
-    "output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/correlation",
-)
-dbutils.widgets.dropdown("run_retinal_age", "true", ["true", "false"])
-dbutils.widgets.dropdown(
-    "run_comorbidity_models", "true", ["true", "false"]
-)
-dbutils.widgets.text("expected_embedding_dim", "1024")
-dbutils.widgets.text("n_splits", "5")
-dbutils.widgets.text("pca_components", "64")
-dbutils.widgets.text("minimum_outcome_positives", "50")
-dbutils.widgets.text("minimum_outcome_negatives", "50")
-dbutils.widgets.text("random_seed", "20260727")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = dbutils.widgets.get("repo_root").rstrip("/")
-sap_path = dbutils.widgets.get("sap_path").strip()
-embedding_path = dbutils.widgets.get("embedding_path").strip()
-prediction_path_requested = dbutils.widgets.get(
-    "retinal_age_prediction_path"
-).strip()
-output_root = Path(dbutils.widgets.get("output_root").strip())
-should_run_retinal_age = dbutils.widgets.get("run_retinal_age") == "true"
-should_run_models = dbutils.widgets.get("run_comorbidity_models") == "true"
-expected_embedding_dim = int(dbutils.widgets.get("expected_embedding_dim"))
-n_splits = int(dbutils.widgets.get("n_splits"))
-pca_components = int(dbutils.widgets.get("pca_components"))
-minimum_outcome_positives = int(
-    dbutils.widgets.get("minimum_outcome_positives")
+from pathlib import Path
+
+repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+derived_root = (
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging"
 )
-minimum_outcome_negatives = int(
-    dbutils.widgets.get("minimum_outcome_negatives")
+sap_path = f"{derived_root}/sap_questionnaire_visit"
+embedding_path = (
+    f"{derived_root}/fundus_retfound/02_embeddings/retfound_embeddings_delta"
 )
-random_seed = int(dbutils.widgets.get("random_seed"))
+prediction_path_requested = ""
+output_root = Path(f"{derived_root}/correlation")
+should_run_retinal_age = True
+should_run_models = True
+expected_embedding_dim = 1024
+n_splits = 5
+pca_components = 64
+minimum_outcome_positives = 50
+minimum_outcome_negatives = 50
+random_seed = 20260727
 
 if expected_embedding_dim != 1024:
     raise ValueError("This analysis expects the 1,024-dimensional RETFound vector.")

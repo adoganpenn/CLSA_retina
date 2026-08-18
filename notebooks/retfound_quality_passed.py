@@ -40,60 +40,28 @@ import torch
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "quality_batches_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_retfound/01_quality/batches",
-)
-dbutils.widgets.text(
-    "embedding_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_retfound/02_embeddings",
-)
-dbutils.widgets.text(
-    "quality_pass_columns",
-    "quality_pass",
-    "Comma-separated flags; every flag must pass",
-)
-dbutils.widgets.text("expected_quality_batches", "213")
-dbutils.widgets.text("poll_seconds", "30")
-dbutils.widgets.text("heartbeat_minutes", "5")
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
-dbutils.widgets.text("gpu_batch_size", "8")
-dbutils.widgets.dropdown("resume_batches", "true", ["true", "false"])
 
 # COMMAND ----------
-repo_root = dbutils.widgets.get("repo_root").rstrip("/")
-quality_batches_root = Path(
-    dbutils.widgets.get("quality_batches_root").strip()
+from pathlib import Path
+
+repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+derived_root = (
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/fundus_retfound"
 )
-embedding_output_root = Path(
-    dbutils.widgets.get("embedding_output_root").strip()
-)
-quality_pass_columns = [
-    value.strip()
-    for value in dbutils.widgets.get("quality_pass_columns").split(",")
-    if value.strip()
-]
-expected_quality_batches = int(
-    dbutils.widgets.get("expected_quality_batches")
-)
-poll_seconds = int(dbutils.widgets.get("poll_seconds"))
-heartbeat_seconds = 60 * int(dbutils.widgets.get("heartbeat_minutes"))
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
-device_requested = dbutils.widgets.get("device")
-gpu_batch_size = int(dbutils.widgets.get("gpu_batch_size"))
-resume_batches = dbutils.widgets.get("resume_batches") == "true"
+quality_batches_root = Path(f"{derived_root}/01_quality/batches")
+embedding_output_root = Path(f"{derived_root}/02_embeddings")
+quality_pass_columns = ["quality_pass"]
+expected_quality_batches = 213
+poll_seconds = 30
+heartbeat_seconds = 5 * 60
+retfound_repo = None
+checkpoint_path = None
+allow_downloads = True
+device_requested = "cuda"
+gpu_batch_size = 8
+resume_batches = True
 expected_embedding_dim = 1024
 
 if expected_quality_batches < 1:

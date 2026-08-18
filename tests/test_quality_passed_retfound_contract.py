@@ -20,9 +20,9 @@ class QualityPassedRETFoundContractTests(unittest.TestCase):
 
         self.assertIn('"quality_pass_columns"', notebook)
         self.assertIn('"quality_pass"', notebook)
-        self.assertIn('"expected_quality_batches", "213"', notebook)
-        self.assertIn('"poll_seconds", "30"', notebook)
-        self.assertIn('"resume_batches", "true"', notebook)
+        self.assertIn("expected_quality_batches = 213", notebook)
+        self.assertIn("poll_seconds = 30", notebook)
+        self.assertIn("resume_batches = True", notebook)
         self.assertIn("select_quality_passed", notebook)
         self.assertIn("read_completed_quality_batch", notebook)
         self.assertIn("while True:", notebook)

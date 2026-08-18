@@ -43,70 +43,29 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("notebook08_root", "")
-dbutils.widgets.text("notebook09_root", "")
-dbutils.widgets.text(
-    "sap_questionnaire_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/sap_questionnaire_visit",
-)
-dbutils.widgets.text(
-    "epigenetic_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/sap_epigenetic_baseline",
-)
-dbutils.widgets.text("three_cohort_root", "")
-dbutils.widgets.text("output_root", "")
-dbutils.widgets.dropdown("require_complete_notebook09", "true", ["true", "false"])
-dbutils.widgets.text("minimum_per_group", "10")
-dbutils.widgets.text("fdr_alpha", "0.05")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
 age_glaucoma_root = Path(
-    dbutils.widgets.get("age_glaucoma_output_root").strip()
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
-
-
-def configured_path(widget_name, default):
-    value = dbutils.widgets.get(widget_name).strip()
-    return Path(value) if value else Path(default)
-
-
-notebook08_root = configured_path(
-    "notebook08_root",
-    age_glaucoma_root / "13_glaucoma_classifier_spatial_validation",
+notebook08_root = (
+    age_glaucoma_root / "13_glaucoma_classifier_spatial_validation"
 )
-notebook09_root = configured_path(
-    "notebook09_root",
-    age_glaucoma_root / "14_clsa_anatomic_explainability",
-)
-three_cohort_root = configured_path(
-    "three_cohort_root",
-    age_glaucoma_root / "11_three_cohort_glaucoma",
-)
-output_root = configured_path(
-    "output_root",
-    age_glaucoma_root / "15_questionnaire_epigenetic_aging",
-)
-sap_questionnaire_path = Path(
-    dbutils.widgets.get("sap_questionnaire_path").strip()
-)
-epigenetic_path = Path(dbutils.widgets.get("epigenetic_path").strip())
-require_complete_notebook09 = (
-    dbutils.widgets.get("require_complete_notebook09") == "true"
-)
-minimum_per_group = int(dbutils.widgets.get("minimum_per_group"))
-fdr_alpha = float(dbutils.widgets.get("fdr_alpha"))
+notebook09_root = age_glaucoma_root / "14_clsa_anatomic_explainability"
+three_cohort_root = age_glaucoma_root / "11_three_cohort_glaucoma"
+output_root = age_glaucoma_root / "15_questionnaire_epigenetic_aging"
+sap_questionnaire_path = age_glaucoma_root.parent / "sap_questionnaire_visit"
+epigenetic_path = age_glaucoma_root.parent / "sap_epigenetic_baseline"
+require_complete_notebook09 = True
+minimum_per_group = 10
+fdr_alpha = 0.05
 if minimum_per_group < 5:
     raise ValueError("minimum_per_group must be at least 5")
 if not 0 < fdr_alpha < 1:

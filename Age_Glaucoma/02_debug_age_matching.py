@@ -22,16 +22,16 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("current_age_caliper_years", "5.0")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-output_root = Path(dbutils.widgets.get("age_glaucoma_output_root").strip())
-current_caliper = float(dbutils.widgets.get("current_age_caliper_years"))
+from pathlib import Path
+
+output_root = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
+)
+current_caliper = 5.0
 if current_caliper < 0:
     raise ValueError("current_age_caliper_years cannot be negative")
 

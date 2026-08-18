@@ -32,35 +32,26 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.dropdown("force_retrain", "false", ["false", "true"])
-dbutils.widgets.text("ridge_alpha", "10.0")
-dbutils.widgets.text("cv_folds", "5")
-dbutils.widgets.text("common_support_min_age", "45")
-dbutils.widgets.text("common_support_max_age", "85")
-dbutils.widgets.text("age_caliper_years", "1.0")
-dbutils.widgets.text("match_ratio", "1")
-dbutils.widgets.text("bootstrap_repetitions", "5000")
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
-output_root = Path(dbutils.widgets.get("age_glaucoma_output_root").strip())
-force_retrain = dbutils.widgets.get("force_retrain") == "true"
-ridge_alpha = float(dbutils.widgets.get("ridge_alpha"))
-cv_folds = int(dbutils.widgets.get("cv_folds"))
-support_min_age = float(dbutils.widgets.get("common_support_min_age"))
-support_max_age = float(dbutils.widgets.get("common_support_max_age"))
-age_caliper_years = float(dbutils.widgets.get("age_caliper_years"))
-match_ratio = int(dbutils.widgets.get("match_ratio"))
-bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
+output_root = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
+)
+force_retrain = False
+ridge_alpha = 10.0
+cv_folds = 5
+support_min_age = 45.0
+support_max_age = 85.0
+age_caliper_years = 1.0
+match_ratio = 1
+bootstrap_repetitions = 5000
 
 if ridge_alpha < 0:
     raise ValueError("ridge_alpha cannot be negative")

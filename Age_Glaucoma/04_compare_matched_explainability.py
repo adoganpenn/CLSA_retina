@@ -44,51 +44,32 @@ import pandas as pd
 import torch
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.text(
-    "checkpoint_cache_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth",
-    "Persistent RETFound checkpoint",
-)
-dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "cuda", ["cuda", "auto", "cpu"])
-dbutils.widgets.text("n_match_sets", "40")
-dbutils.widgets.text("n_outlier_match_sets", "20")
-dbutils.widgets.text("embedding_cosine_threshold", "0.99")
-dbutils.widgets.text("spatial_outlier_z", "3.5")
-dbutils.widgets.dropdown("align_left_eyes", "true", ["true", "false"])
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
-output_root = Path(dbutils.widgets.get("age_glaucoma_output_root").strip())
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-checkpoint_cache_value = dbutils.widgets.get("checkpoint_cache_path").strip()
-checkpoint_cache_path = (
-    Path(checkpoint_cache_value) if checkpoint_cache_value else None
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
 )
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
+output_root = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
+)
+retfound_repo = None
+checkpoint_path = None
+checkpoint_cache_path = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/model_checkpoints/RETFound_mae_natureCFP.pth"
+)
+allow_downloads = True
 hf_token = dbutils.widgets.get("hf_token").strip()
-device_requested = dbutils.widgets.get("device")
-n_match_sets = int(dbutils.widgets.get("n_match_sets"))
-n_outlier_match_sets = int(dbutils.widgets.get("n_outlier_match_sets"))
-embedding_cosine_threshold = float(
-    dbutils.widgets.get("embedding_cosine_threshold")
-)
-spatial_outlier_z = float(dbutils.widgets.get("spatial_outlier_z"))
-align_left_eyes = dbutils.widgets.get("align_left_eyes") == "true"
+device_requested = "cuda"
+n_match_sets = 40
+n_outlier_match_sets = 20
+embedding_cosine_threshold = 0.99
+spatial_outlier_z = 3.5
+align_left_eyes = True
 
 if n_match_sets < 5:
     raise ValueError("n_match_sets must be at least 5")

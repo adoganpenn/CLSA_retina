@@ -14,7 +14,7 @@ class AgeGapExtremesNotebookContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('%pip install "timm==1.0.28"', source)
-        self.assertIn('"allow_repo_clone", "true"', source)
+        self.assertIn("allow_repo_clone = True", source)
         self.assertIn("allow_repo_clone=allow_repo_clone", source)
         self.assertIn("retfound_repo_commit", source)
         self.assertIn("Participant duplication remains", source)

@@ -47,141 +47,55 @@ import pandas as pd
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "age_glaucoma_output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/Age_Glaucoma",
-)
-dbutils.widgets.text("three_cohort_root", "")
-dbutils.widgets.text("healthy_images_path", "")
-dbutils.widgets.text("glaucoma_images_path", "")
-dbutils.widgets.text("zeiss_images_path", "")
-dbutils.widgets.text("optic_disc_annotations_path", "")
-dbutils.widgets.text("output_root", "")
-dbutils.widgets.text("control_ratio", "2")
-dbutils.widgets.text("age_caliper_years", "1.0")
-dbutils.widgets.text("outer_folds", "5")
-dbutils.widgets.text("inner_folds", "4")
-dbutils.widgets.text("bootstrap_repetitions", "2000")
-dbutils.widgets.dropdown("run_explainability", "true", ["true", "false"])
-dbutils.widgets.dropdown("explain_all_images", "false", ["false", "true"])
-dbutils.widgets.dropdown(
-    "explain_all_matched_clsa", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "include_zeiss_in_explainability", "false", ["false", "true"]
-)
-dbutils.widgets.dropdown(
-    "use_all_matched_clsa_images", "false", ["false", "true"]
-)
-dbutils.widgets.text("n_explain_participants_per_group", "40")
-dbutils.widgets.text("max_explain_images_per_participant", "2")
-dbutils.widgets.text("explain_batch_size", "50")
-dbutils.widgets.dropdown("resume_explainability", "true", ["true", "false"])
-dbutils.widgets.dropdown(
-    "allow_exploratory_disc_proxy", "true", ["true", "false"]
-)
-dbutils.widgets.dropdown(
-    "require_validated_disc_for_claim", "true", ["true", "false"]
-)
-dbutils.widgets.text("retfound_repo", "")
-dbutils.widgets.text("checkpoint_path", "")
-dbutils.widgets.dropdown("allow_repo_clone", "true", ["true", "false"])
-dbutils.widgets.dropdown("allow_downloads", "true", ["true", "false"])
 dbutils.widgets.text("hf_token", "", "Hugging Face token (temporary)")
-dbutils.widgets.dropdown("device", "auto", ["auto", "cuda", "cpu"])
-dbutils.widgets.text("embedding_cosine_threshold", "0.999")
-dbutils.widgets.text("clsa_logit_replay_tolerance", "0.001")
-dbutils.widgets.text("zeiss_probability_replay_tolerance", "0.025")
 
 # COMMAND ----------
-repo_root = Path(dbutils.widgets.get("repo_root").strip())
+from pathlib import Path
+
+repo_root = Path(
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+)
 age_glaucoma_root = Path(
-    dbutils.widgets.get("age_glaucoma_output_root").strip()
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
-
-
-def configured_path(widget_name, default):
-    value = dbutils.widgets.get(widget_name).strip()
-    return Path(value) if value else Path(default)
-
-
-three_cohort_root = configured_path(
-    "three_cohort_root",
-    age_glaucoma_root / "11_three_cohort_glaucoma",
-)
+three_cohort_root = age_glaucoma_root / "11_three_cohort_glaucoma"
 cohort_root = three_cohort_root / "01_cohort"
-healthy_images_path = configured_path(
-    "healthy_images_path",
-    age_glaucoma_root / "03_clsa_controls" / "eligible_images_delta",
+healthy_images_path = (
+    age_glaucoma_root / "03_clsa_controls" / "eligible_images_delta"
 )
-glaucoma_images_path = configured_path(
-    "glaucoma_images_path",
-    cohort_root / "clsa_glaucoma_only_embeddings_delta",
-)
-zeiss_images_path = configured_path(
-    "zeiss_images_path",
+glaucoma_images_path = cohort_root / "clsa_glaucoma_only_embeddings_delta"
+zeiss_images_path = (
     age_glaucoma_root
     / "01_zeiss_source_cohort"
-    / "zeiss_embedded_images.parquet",
+    / "zeiss_embedded_images.parquet"
 )
-annotation_text = dbutils.widgets.get("optic_disc_annotations_path").strip()
-optic_disc_annotations_path = Path(annotation_text) if annotation_text else None
-output_root = configured_path(
-    "output_root",
-    age_glaucoma_root / "13_glaucoma_classifier_spatial_validation",
-)
-control_ratio = int(dbutils.widgets.get("control_ratio"))
-age_caliper_years = float(dbutils.widgets.get("age_caliper_years"))
-outer_folds = int(dbutils.widgets.get("outer_folds"))
-inner_folds = int(dbutils.widgets.get("inner_folds"))
-bootstrap_repetitions = int(dbutils.widgets.get("bootstrap_repetitions"))
-run_explainability_flag = dbutils.widgets.get("run_explainability") == "true"
-explain_all_images = dbutils.widgets.get("explain_all_images") == "true"
-explain_all_matched_clsa = (
-    dbutils.widgets.get("explain_all_matched_clsa") == "true"
-    or explain_all_images
-)
-include_zeiss_in_explainability = (
-    dbutils.widgets.get("include_zeiss_in_explainability") == "true"
-    or explain_all_images
-)
-use_all_matched_clsa_images = (
-    dbutils.widgets.get("use_all_matched_clsa_images") == "true"
-    or explain_all_images
-)
-n_explain_participants_per_group = int(
-    dbutils.widgets.get("n_explain_participants_per_group")
-)
-max_explain_images_per_participant = int(
-    dbutils.widgets.get("max_explain_images_per_participant")
-)
-explain_batch_size = int(dbutils.widgets.get("explain_batch_size"))
-resume_explainability = dbutils.widgets.get("resume_explainability") == "true"
-allow_exploratory_disc_proxy = (
-    dbutils.widgets.get("allow_exploratory_disc_proxy") == "true"
-)
-require_validated_disc_for_claim = (
-    dbutils.widgets.get("require_validated_disc_for_claim") == "true"
-)
-retfound_repo = dbutils.widgets.get("retfound_repo").strip() or None
-checkpoint_path = dbutils.widgets.get("checkpoint_path").strip() or None
-allow_repo_clone = dbutils.widgets.get("allow_repo_clone") == "true"
-allow_downloads = dbutils.widgets.get("allow_downloads") == "true"
-device_requested = dbutils.widgets.get("device")
-embedding_cosine_threshold = float(
-    dbutils.widgets.get("embedding_cosine_threshold")
-)
-clsa_logit_replay_tolerance = float(
-    dbutils.widgets.get("clsa_logit_replay_tolerance")
-)
-zeiss_probability_replay_tolerance = float(
-    dbutils.widgets.get("zeiss_probability_replay_tolerance")
-)
+optic_disc_annotations_path = None
+output_root = age_glaucoma_root / "13_glaucoma_classifier_spatial_validation"
+control_ratio = 2
+age_caliper_years = 1.0
+outer_folds = 5
+inner_folds = 4
+bootstrap_repetitions = 2000
+run_explainability_flag = True
+explain_all_images = False
+explain_all_matched_clsa = True
+include_zeiss_in_explainability = False
+use_all_matched_clsa_images = False
+n_explain_participants_per_group = 40
+max_explain_images_per_participant = 2
+explain_batch_size = 50
+resume_explainability = True
+allow_exploratory_disc_proxy = True
+require_validated_disc_for_claim = True
+retfound_repo = None
+checkpoint_path = None
+allow_repo_clone = True
+allow_downloads = True
+device_requested = "auto"
+embedding_cosine_threshold = 0.999
+clsa_logit_replay_tolerance = 0.001
+zeiss_probability_replay_tolerance = 0.025
 
 if control_ratio < 1 or control_ratio > 5:
     raise ValueError("control_ratio must be between 1 and 5")

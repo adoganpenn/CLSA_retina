@@ -1206,39 +1206,19 @@ from scipy import ndimage
 from scipy.stats import fisher_exact
 
 
-def review_widget_or_default(name, default):
-    try:
-        value = dbutils.widgets.get(name).strip()
-    except Exception:
-        value = ""
-    return value or str(default)
-
-
 review_repo_root = Path(
-    review_widget_or_default(
-        "repo_root",
-        "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-    )
+    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
 )
 review_age_glaucoma_root = Path(
-    review_widget_or_default(
-        "age_glaucoma_output_root",
-        "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-        "clsa_retinal_aging/Age_Glaucoma",
-    )
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
+    "clsa_retinal_aging/Age_Glaucoma"
 )
-notebook08_root = Path(
-    review_widget_or_default(
-        "notebook08_root",
-        review_age_glaucoma_root
-        / "13_glaucoma_classifier_spatial_validation",
-    )
+notebook08_root = (
+    review_age_glaucoma_root
+    / "13_glaucoma_classifier_spatial_validation"
 )
-output_root = Path(
-    review_widget_or_default(
-        "output_root",
-        review_age_glaucoma_root / "14_clsa_anatomic_explainability",
-    )
+output_root = (
+    review_age_glaucoma_root / "14_clsa_anatomic_explainability"
 )
 review_module_root = review_repo_root / "src"
 if str(review_module_root) not in sys.path:
@@ -1270,10 +1250,8 @@ quality_config = QualityConfig(
     model_input_size=224,
     save_preprocessed=False,
 )
-permutations = int(review_widget_or_default("permutations", "5000"))
-bootstrap_repetitions = int(
-    review_widget_or_default("bootstrap_repetitions", "2000")
-)
+permutations = 5000
+bootstrap_repetitions = 2000
 review_examples_per_group = 3
 confidence_extreme_fraction = 0.10
 registration_size = 256

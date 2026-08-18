@@ -69,18 +69,9 @@ class GlaucomaClassifierSpatialContractTests(unittest.TestCase):
         self.assertIn('"clsa_participants_selected"', self.source)
 
     def test_full_matched_clsa_is_the_safe_default(self):
-        self.assertIn(
-            '"explain_all_matched_clsa", "true", ["true", "false"]',
-            self.source,
-        )
-        self.assertIn(
-            '"include_zeiss_in_explainability", "false", ["false", "true"]',
-            self.source,
-        )
-        self.assertIn(
-            '"use_all_matched_clsa_images", "false", ["false", "true"]',
-            self.source,
-        )
+        self.assertIn("explain_all_matched_clsa = True", self.source)
+        self.assertIn("include_zeiss_in_explainability = False", self.source)
+        self.assertIn("use_all_matched_clsa_images = False", self.source)
 
     def test_binary_artifacts_are_staged_locally_before_volume_publish(self):
         self.assertIn("def publish_local_artifact", self.source)

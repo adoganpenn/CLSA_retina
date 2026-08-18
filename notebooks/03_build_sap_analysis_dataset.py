@@ -27,54 +27,16 @@ import zipfile
 from pyspark.sql import functions as F
 
 # COMMAND ----------
-dbutils.widgets.text(
-    "repo_root",
-    "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina",
-)
-dbutils.widgets.text(
-    "volume_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset",
-)
-dbutils.widgets.text(
-    "output_root",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging",
-)
-dbutils.widgets.text(
-    "image_manifest_path",
-    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/derived/"
-    "clsa_retinal_aging/fundus_image_manifest",
-)
-dbutils.widgets.dropdown(
-    "extract_questionnaire_csv",
-    "true",
-    ["true", "false"],
-)
-dbutils.widgets.dropdown(
-    "overwrite_extracted_csv",
-    "false",
-    ["false", "true"],
-)
-dbutils.widgets.dropdown(
-    "confirm_visual_acuity_logmar",
-    "false",
-    ["false", "true"],
-)
+# Reproducible configuration is fixed in the next cell.
 
 # COMMAND ----------
-repo_root = dbutils.widgets.get("repo_root").rstrip("/")
-volume_root = dbutils.widgets.get("volume_root").rstrip("/")
-output_root = dbutils.widgets.get("output_root").rstrip("/")
-image_manifest_path = dbutils.widgets.get("image_manifest_path").strip()
-extract_questionnaire = (
-    dbutils.widgets.get("extract_questionnaire_csv") == "true"
-)
-overwrite_extracted = (
-    dbutils.widgets.get("overwrite_extracted_csv") == "true"
-)
-visual_acuity_logmar_confirmed = (
-    dbutils.widgets.get("confirm_visual_acuity_logmar") == "true"
-)
+repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
+volume_root = "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset"
+output_root = f"{volume_root}/derived/clsa_retinal_aging"
+image_manifest_path = f"{output_root}/fundus_image_manifest"
+extract_questionnaire = True
+overwrite_extracted = False
+visual_acuity_logmar_confirmed = False
 
 module_path = Path(repo_root) / "src" / "clsa_pipeline.py"
 if not module_path.exists():

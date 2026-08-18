@@ -26,7 +26,7 @@ class CorrelationNotebookContractTests(unittest.TestCase):
             "epigenetic_hannum_age",
         ):
             self.assertIn(epigenetic_measure, notebook)
-        self.assertIn('dbutils.widgets.text("expected_embedding_dim", "1024")', notebook)
+        self.assertIn("expected_embedding_dim = 1024", notebook)
         self.assertIn("retfound_embedding", module)
         self.assertIn("GroupKFold", module)
         self.assertIn("train_groups & test_groups", module)
