@@ -74,6 +74,26 @@ class QuestionnaireEpigeneticNotebookContractTests(unittest.TestCase):
             self.assertIn(variable, self.source)
         self.assertIn('master.loc[master["visit"] != "BL"', self.source)
 
+    def test_epigenetics_come_from_the_same_baseline_questionnaire_source(self):
+        self.assertIn("2209017_UOttawa_EFreeman_BL.zip", self.source)
+        self.assertIn(
+            "2209017_UOttawa_EFreeman_Baseline_CoPv7_Qx_CANUE_PA_BS.csv",
+            self.source,
+        )
+        for raw_variable in (
+            "DNAmAge_COM",
+            "AgeAccelerationDifference_COM",
+            "AgeAccelerationResidual_COM",
+            "IEAA_COM",
+            "EEAA_COM",
+            "Hannum_Age_COM",
+        ):
+            self.assertIn(f'"{raw_variable}"', self.source)
+        self.assertIn("questionnaire_source_spark", self.source)
+        self.assertIn('F.col("visit") == "BL"', self.source)
+        self.assertIn('"separate_epigenetic_dataset_loaded": False', self.source)
+        self.assertNotIn("sap_epigenetic_baseline", self.source)
+
     def test_retinal_age_prediction_modes_are_not_conflated(self):
         self.assertIn("CLSA_healthy_grouped_out_of_fold", self.source)
         self.assertIn("CLSA_healthy_frozen_model_application", self.source)

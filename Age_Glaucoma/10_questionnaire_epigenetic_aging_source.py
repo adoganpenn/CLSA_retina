@@ -36,6 +36,7 @@ import importlib
 import json
 import math
 import sys
+import zipfile
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -62,7 +63,13 @@ notebook09_root = age_glaucoma_root / "14_clsa_anatomic_explainability"
 three_cohort_root = age_glaucoma_root / "11_three_cohort_glaucoma"
 output_root = age_glaucoma_root / "15_questionnaire_epigenetic_aging"
 sap_questionnaire_path = age_glaucoma_root.parent / "sap_questionnaire_visit"
-epigenetic_path = age_glaucoma_root.parent / "sap_epigenetic_baseline"
+baseline_questionnaire_archive_path = Path(
+    "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset/"
+    "2209017_UOttawa_EFreeman_BL.zip"
+)
+baseline_questionnaire_member_suffix = (
+    "2209017_UOttawa_EFreeman_Baseline_CoPv7_Qx_CANUE_PA_BS.csv"
+)
 require_complete_notebook09 = True
 minimum_per_group = 10
 fdr_alpha = 0.05
@@ -123,7 +130,7 @@ required_paths = {
     "notebook 09 image anatomy": image_anatomy_path,
     "notebook 09 participant anatomy": participant_anatomy_path,
     "SAP questionnaire Delta table": sap_questionnaire_path,
-    "baseline epigenetic Delta table": epigenetic_path,
+    "baseline questionnaire ZIP": baseline_questionnaire_archive_path,
 }
 missing_paths = [
     f"{label}: {path}"
@@ -134,6 +141,21 @@ if missing_paths:
     raise FileNotFoundError(
         "Required completed outputs are missing:\n- " + "\n- ".join(missing_paths)
     )
+
+with zipfile.ZipFile(baseline_questionnaire_archive_path) as baseline_archive:
+    baseline_member_matches = [
+        name
+        for name in baseline_archive.namelist()
+        if name.endswith(baseline_questionnaire_member_suffix)
+    ]
+if len(baseline_member_matches) != 1:
+    raise ValueError(
+        "Expected exactly one baseline questionnaire CSV ending with "
+        f"{baseline_questionnaire_member_suffix!r}; found "
+        f"{len(baseline_member_matches)}"
+    )
+baseline_questionnaire_member_path = baseline_member_matches[0]
+print("Baseline questionnaire epigenetic source:", baseline_questionnaire_member_path)
 
 
 def normalize_visit_pandas(series):
@@ -337,11 +359,15 @@ cohort = cohort.merge(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 3. Load only matched participants from questionnaire and epigenetic tables
+# MAGIC ## 3. Load matched questionnaire and epigenetic fields from one source
 # MAGIC
 # MAGIC Questionnaire answers are joined on participant **and exact image visit**.
-# MAGIC Baseline methylation outputs are joined by participant, then set to missing
-# MAGIC for non-baseline image visits in the inferential dataset.
+# MAGIC The six released methylation outputs are columns of the same baseline
+# MAGIC `CoPv7_Qx_CANUE_PA_BS.csv` questionnaire member. Notebook 03 standardizes
+# MAGIC that member into `sap_questionnaire_visit`; notebook 10 reads no separate
+# MAGIC epigenetic dataset. Baseline epigenetic columns are joined by participant,
+# MAGIC then set to missing for non-baseline image visits to preserve temporal
+# MAGIC alignment.
 
 # COMMAND ----------
 PRIMARY_SAP_SPECIFICATIONS = {
@@ -491,16 +517,29 @@ EPIGENETIC_COLUMNS = [
     "epigenetic_hannum_age",
 ]
 
+EPIGENETIC_SOURCE_VARIABLES = {
+    "DNAmAge_COM": "epigenetic_dnam_age",
+    "AgeAccelerationDifference_COM": (
+        "epigenetic_age_acceleration_difference"
+    ),
+    "AgeAccelerationResidual_COM": (
+        "epigenetic_age_acceleration_residual"
+    ),
+    "IEAA_COM": "epigenetic_ieaa",
+    "EEAA_COM": "epigenetic_eeaa",
+    "Hannum_Age_COM": "epigenetic_hannum_age",
+}
+
 cohort_id_rows = [(value,) for value in cohort["participant_id"].astype(str)]
 cohort_ids_spark = spark.createDataFrame(
     cohort_id_rows, schema="participant_id string"
 ).dropDuplicates()
 
-questionnaire_spark = spark.read.format("delta").load(
+questionnaire_source_spark = spark.read.format("delta").load(
     str(sap_questionnaire_path)
 )
-questionnaire_spark = (
-    questionnaire_spark.withColumn(
+questionnaire_source_spark = (
+    questionnaire_source_spark.withColumn(
         "participant_id", F.trim(F.col("participant_id").cast("string"))
     )
     .withColumn(
@@ -521,9 +560,11 @@ questionnaire_columns = [
     *QUESTIONNAIRE_SPECIFICATIONS,
 ]
 available_questionnaire_columns = [
-    column for column in questionnaire_columns if column in questionnaire_spark.columns
+    column
+    for column in questionnaire_columns
+    if column in questionnaire_source_spark.columns
 ]
-questionnaire_spark = questionnaire_spark.select(
+questionnaire_spark = questionnaire_source_spark.select(
     *available_questionnaire_columns
 )
 if (
@@ -539,30 +580,30 @@ questionnaire.attrs = {}
 for missing_column in set(questionnaire_columns) - set(questionnaire.columns):
     questionnaire[missing_column] = np.nan
 
-epigenetic_spark = (
-    spark.read.format("delta")
-    .load(str(epigenetic_path))
-    .withColumn(
-        "participant_id", F.trim(F.col("participant_id").cast("string"))
-    )
-    .join(cohort_ids_spark, "participant_id", "inner")
-)
 required_epigenetic_columns = {
     "participant_id",
-    "chronological_age_at_baseline",
+    "visit",
+    "age_at_fundus_years",
     *EPIGENETIC_COLUMNS,
+    "epigenetic_measures_available_count",
+    "epigenetic_complete_six_measure_panel",
+    "epigenetic_difference_qc_status",
+    "epigenetic_clock_range_qc_status",
 }
 missing_epigenetic_columns = required_epigenetic_columns - set(
-    epigenetic_spark.columns
+    questionnaire_source_spark.columns
 )
 if missing_epigenetic_columns:
     raise ValueError(
-        "Baseline epigenetic table is missing: "
+        "The baseline questionnaire table is missing standardized epigenetic "
+        "columns derived from CoPv7_Qx_CANUE_PA_BS.csv: "
         f"{sorted(missing_epigenetic_columns)}"
     )
-epigenetic_spark = epigenetic_spark.select(
+epigenetic_spark = questionnaire_source_spark.filter(
+    F.col("visit") == "BL"
+).select(
     "participant_id",
-    F.col("chronological_age_at_baseline").alias(
+    F.col("age_at_fundus_years").cast("double").alias(
         "epigenetic_chronological_age_at_baseline"
     ),
     *EPIGENETIC_COLUMNS,
@@ -578,7 +619,9 @@ if (
     .limit(1)
     .count()
 ):
-    raise ValueError("Baseline epigenetic table is not unique by participant")
+    raise ValueError(
+        "Baseline rows in the questionnaire table are not unique by participant"
+    )
 epigenetic = epigenetic_spark.toPandas()
 epigenetic.attrs = {}
 
@@ -1213,6 +1256,11 @@ summary = {
     },
     "epigenetic_scope": {
         "measurement_visit": "BL",
+        "source_archive": str(baseline_questionnaire_archive_path),
+        "source_member": baseline_questionnaire_member_path,
+        "raw_to_analysis_column_map": EPIGENETIC_SOURCE_VARIABLES,
+        "loaded_from_same_questionnaire_table": True,
+        "separate_epigenetic_dataset_loaded": False,
         "n_horvath_dnam_age": int(master["epigenetic_dnam_age"].notna().sum()),
         "n_hannum_age": int(master["epigenetic_hannum_age"].notna().sum()),
         "raw_DNA_recalculated": False,
