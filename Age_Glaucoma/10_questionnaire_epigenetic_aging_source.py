@@ -362,12 +362,12 @@ cohort = cohort.merge(
 # MAGIC ## 3. Load matched questionnaire and epigenetic fields from one source
 # MAGIC
 # MAGIC Questionnaire answers are joined on participant **and exact image visit**.
-# MAGIC The six released methylation outputs are columns of the same baseline
-# MAGIC `CoPv7_Qx_CANUE_PA_BS.csv` questionnaire member. Notebook 03 standardizes
-# MAGIC that member into `sap_questionnaire_visit`; notebook 10 reads no separate
-# MAGIC epigenetic dataset. Baseline epigenetic columns are joined by participant,
-# MAGIC then set to missing for non-baseline image visits to preserve temporal
-# MAGIC alignment.
+# MAGIC The six released methylation outputs are read directly from the same
+# MAGIC baseline `CoPv7_Qx_CANUE_PA_BS.csv` questionnaire member. Only `entity_id`
+# MAGIC and the six explicitly released variables are requested from the archive;
+# MAGIC notebook 10 assumes no precomputed epigenetic table or QC fields. The raw
+# MAGIC fields are given local analysis aliases after loading and are set to
+# MAGIC missing for non-baseline image visits to preserve temporal alignment.
 
 # COMMAND ----------
 PRIMARY_SAP_SPECIFICATIONS = {
@@ -530,6 +530,19 @@ EPIGENETIC_SOURCE_VARIABLES = {
     "Hannum_Age_COM": "epigenetic_hannum_age",
 }
 
+RAW_PARTICIPANT_ID_COLUMN = "entity_id"
+CLSA_NUMERIC_MISSING_CODES = {
+    "",
+    "-8",
+    "-77771",
+    "-77772",
+    "-88880",
+    "-88888",
+    "-99991",
+    "-99993",
+    "-99999",
+}
+
 cohort_id_rows = [(value,) for value in cohort["participant_id"].astype(str)]
 cohort_ids_spark = spark.createDataFrame(
     cohort_id_rows, schema="participant_id string"
@@ -580,50 +593,72 @@ questionnaire.attrs = {}
 for missing_column in set(questionnaire_columns) - set(questionnaire.columns):
     questionnaire[missing_column] = np.nan
 
-required_epigenetic_columns = {
-    "participant_id",
-    "visit",
-    "age_at_fundus_years",
-    *EPIGENETIC_COLUMNS,
-    "epigenetic_measures_available_count",
-    "epigenetic_complete_six_measure_panel",
-    "epigenetic_difference_qc_status",
-    "epigenetic_clock_range_qc_status",
-}
-missing_epigenetic_columns = required_epigenetic_columns - set(
-    questionnaire_source_spark.columns
-)
-if missing_epigenetic_columns:
+raw_epigenetic_columns = [
+    RAW_PARTICIPANT_ID_COLUMN,
+    *EPIGENETIC_SOURCE_VARIABLES,
+]
+with zipfile.ZipFile(baseline_questionnaire_archive_path) as baseline_archive:
+    with baseline_archive.open(baseline_questionnaire_member_path) as member:
+        baseline_header = pd.read_csv(member, nrows=0).columns.tolist()
+missing_raw_columns = set(raw_epigenetic_columns) - set(baseline_header)
+if missing_raw_columns:
     raise ValueError(
-        "The baseline questionnaire table is missing standardized epigenetic "
-        "columns derived from CoPv7_Qx_CANUE_PA_BS.csv: "
-        f"{sorted(missing_epigenetic_columns)}"
+        "The baseline CoPv7 questionnaire CSV is missing explicitly supplied "
+        f"columns: {sorted(missing_raw_columns)}"
     )
-epigenetic_spark = questionnaire_source_spark.filter(
-    F.col("visit") == "BL"
-).select(
-    "participant_id",
-    F.col("age_at_fundus_years").cast("double").alias(
-        "epigenetic_chronological_age_at_baseline"
-    ),
-    *EPIGENETIC_COLUMNS,
-    "epigenetic_measures_available_count",
-    "epigenetic_complete_six_measure_panel",
-    "epigenetic_difference_qc_status",
-    "epigenetic_clock_range_qc_status",
+
+cohort_id_values = set(cohort["participant_id"].astype(str).str.strip())
+matched_epigenetic_chunks = []
+scanned_baseline_rows = 0
+with zipfile.ZipFile(baseline_questionnaire_archive_path) as baseline_archive:
+    with baseline_archive.open(baseline_questionnaire_member_path) as member:
+        for raw_chunk in pd.read_csv(
+            member,
+            usecols=raw_epigenetic_columns,
+            dtype="string",
+            chunksize=100_000,
+        ):
+            scanned_baseline_rows += len(raw_chunk)
+            raw_chunk[RAW_PARTICIPANT_ID_COLUMN] = raw_chunk[
+                RAW_PARTICIPANT_ID_COLUMN
+            ].str.strip()
+            matched_chunk = raw_chunk[
+                raw_chunk[RAW_PARTICIPANT_ID_COLUMN].isin(cohort_id_values)
+            ].copy()
+            if not matched_chunk.empty:
+                matched_epigenetic_chunks.append(matched_chunk)
+
+if matched_epigenetic_chunks:
+    epigenetic_raw = pd.concat(matched_epigenetic_chunks, ignore_index=True)
+else:
+    epigenetic_raw = pd.DataFrame(columns=raw_epigenetic_columns)
+epigenetic_raw = epigenetic_raw.rename(
+    columns={RAW_PARTICIPANT_ID_COLUMN: "participant_id"}
 )
-if (
-    epigenetic_spark.groupBy("participant_id")
-    .count()
-    .filter(F.col("count") > 1)
-    .limit(1)
-    .count()
-):
+epigenetic_raw["participant_id"] = epigenetic_raw["participant_id"].astype(
+    "string"
+).str.strip()
+if epigenetic_raw["participant_id"].duplicated().any():
     raise ValueError(
-        "Baseline rows in the questionnaire table are not unique by participant"
+        "The baseline CoPv7 questionnaire CSV is not unique by entity_id"
     )
-epigenetic = epigenetic_spark.toPandas()
+
+epigenetic = epigenetic_raw[["participant_id"]].copy()
+for source_column, analysis_column in EPIGENETIC_SOURCE_VARIABLES.items():
+    released_values = epigenetic_raw[source_column].astype("string").str.strip()
+    released_values = released_values.mask(
+        released_values.isin(CLSA_NUMERIC_MISSING_CODES)
+    )
+    epigenetic[analysis_column] = pd.to_numeric(
+        released_values,
+        errors="coerce",
+    )
 epigenetic.attrs = {}
+print(
+    "Baseline epigenetic scan:",
+    f"{scanned_baseline_rows:,} rows scanned; "
+    f"{len(epigenetic):,} matched cohort participants",
+)
 
 master = cohort.merge(
     questionnaire,
@@ -646,16 +681,11 @@ master["questionnaire_age_difference"] = master["age"] - pd.to_numeric(
 for column in EPIGENETIC_COLUMNS:
     master[column] = pd.to_numeric(master[column], errors="coerce")
     master.loc[master["visit"] != "BL", column] = np.nan
-master.loc[
-    master["visit"] != "BL", "epigenetic_chronological_age_at_baseline"
-] = np.nan
-for column in (
-    "epigenetic_measures_available_count",
-    "epigenetic_complete_six_measure_panel",
-    "epigenetic_difference_qc_status",
-    "epigenetic_clock_range_qc_status",
-):
-    master.loc[master["visit"] != "BL", column] = np.nan
+master["epigenetic_chronological_age_at_baseline"] = np.where(
+    master["visit"] == "BL",
+    pd.to_numeric(master.get("age_at_fundus_years"), errors="coerce"),
+    np.nan,
+)
 master["retinal_minus_chronological_age"] = (
     master["retinal_age"] - master["chronological_age"]
 )
@@ -686,13 +716,7 @@ for label, subset in (
             "horvath_dnam_age": int(subset["epigenetic_dnam_age"].notna().sum()),
             "hannum_age": int(subset["epigenetic_hannum_age"].notna().sum()),
             "complete_six_epigenetic_measures": int(
-                (
-                    pd.to_numeric(
-                        subset["epigenetic_complete_six_measure_panel"],
-                        errors="coerce",
-                    )
-                    == 1
-                ).sum()
+                subset[EPIGENETIC_COLUMNS].notna().all(axis=1).sum()
             ),
         }
     )
@@ -1259,7 +1283,7 @@ summary = {
         "source_archive": str(baseline_questionnaire_archive_path),
         "source_member": baseline_questionnaire_member_path,
         "raw_to_analysis_column_map": EPIGENETIC_SOURCE_VARIABLES,
-        "loaded_from_same_questionnaire_table": True,
+        "loaded_directly_from_baseline_questionnaire_member": True,
         "separate_epigenetic_dataset_loaded": False,
         "n_horvath_dnam_age": int(master["epigenetic_dnam_age"].notna().sum()),
         "n_hannum_age": int(master["epigenetic_hannum_age"].notna().sum()),

@@ -90,9 +90,19 @@ class QuestionnaireEpigeneticNotebookContractTests(unittest.TestCase):
         ):
             self.assertIn(f'"{raw_variable}"', self.source)
         self.assertIn("questionnaire_source_spark", self.source)
-        self.assertIn('F.col("visit") == "BL"', self.source)
+        self.assertIn("baseline_archive.open", self.source)
+        self.assertIn("usecols=raw_epigenetic_columns", self.source)
+        self.assertIn("chunksize=100_000", self.source)
+        self.assertIn('RAW_PARTICIPANT_ID_COLUMN = "entity_id"', self.source)
         self.assertIn('"separate_epigenetic_dataset_loaded": False', self.source)
         self.assertNotIn("sap_epigenetic_baseline", self.source)
+        for unsupported_column in (
+            "epigenetic_measures_available_count",
+            "epigenetic_complete_six_measure_panel",
+            "epigenetic_difference_qc_status",
+            "epigenetic_clock_range_qc_status",
+        ):
+            self.assertNotIn(unsupported_column, self.source)
 
     def test_retinal_age_prediction_modes_are_not_conflated(self):
         self.assertIn("CLSA_healthy_grouped_out_of_fold", self.source)
