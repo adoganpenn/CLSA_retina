@@ -699,16 +699,18 @@ def extract_retfound_embeddings(
                 print(f"embedded {processed:,}/{len(work):,}")
 
     output = pd.DataFrame(rows)
+    # Persist the failure ledger before checking whether every image failed.
+    # A fully failed batch must still be resumable/auditable by callers.
+    pd.DataFrame(
+        failures,
+        columns=["image_path", "error"],
+    ).to_csv(failures_path, index=False)
     if output.empty:
         raise RuntimeError("Every image failed before RETFound embedding extraction.")
     write_frame(output, cache_path)
     # Keep a stable schema even when every image succeeds. Pandas otherwise
     # writes a newline-only file, which raises EmptyDataError when a resume run
     # reads it.
-    pd.DataFrame(
-        failures,
-        columns=["image_path", "error"],
-    ).to_csv(failures_path, index=False)
     dimensions = sorted(output["embedding_dim"].dropna().astype(int).unique())
     if len(dimensions) != 1:
         raise ValueError(f"Inconsistent embedding dimensions: {dimensions}")
