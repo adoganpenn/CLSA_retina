@@ -3,12 +3,14 @@ import json
 from pathlib import Path
 
 
-NOTEBOOK = (
+REPO_NOTEBOOK = (
     Path(__file__).parents[1]
     / "Age_Glaucoma"
     / "Algorithm Fairness"
     / "01_retfound_age_fairness.ipynb"
 )
+LOCAL_NOTEBOOK = Path(__file__).with_name("01_retfound_age_fairness.ipynb")
+NOTEBOOK = LOCAL_NOTEBOOK if LOCAL_NOTEBOOK.exists() else REPO_NOTEBOOK
 
 
 def _source():
@@ -87,3 +89,23 @@ def test_private_and_aggregate_outputs_are_separated():
     assert "race_match_pairs_private.parquet" in source
     assert "demographic_age_performance.parquet" in source
     assert "RUN_README.md" in source
+
+
+def test_all_available_specific_groups_use_primary_matched_white_cohorts():
+    _, source = _source()
+    assert "race_matched_all_available_age_heads" in source
+    assert 'caliper_analysis"].astype(str).eq("primary_1y")' in source
+    assert 'excluded_nonspecific_groups = {"White", "Multiple groups", "Other"}' in source
+    assert "minimum_all_available_n = minimum_inference_group_n" in source
+    assert "common_age_band_counts" not in source
+    assert "race_matched_all_available_image_selection_private.parquet" in source
+
+
+def test_all_available_heads_are_cross_fitted_by_participant_and_power_audited():
+    _, source = _source()
+    assert "KFold(" in source
+    assert "population_oof_prediction" in source
+    assert "target_head_minus_matched_white_head_mae" in source
+    assert "mde_80_percent_power_years" in source
+    assert "target_minus_white_calibration_slope" in source
+    assert "slope_mde_80_percent_power" in source

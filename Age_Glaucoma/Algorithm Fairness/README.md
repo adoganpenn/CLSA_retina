@@ -34,3 +34,27 @@ Participant identifiers are restricted to `01_private`. The released `Black`
 category is self-reported and must not be relabeled as African ancestry.
 Observed disparities characterize the complete CLSA processing/model pipeline;
 they do not, by themselves, prove bias intrinsic to the pretrained encoder.
+
+## Notebook 02: anatomic explainability across age heads
+
+Notebook 01 section 10 retains every participant in each specific released
+racial-background group meeting the prespecified inference threshold. It uses
+the existing primary ±1-year, sex/comorbidity matching to create a separate 1:2
+White comparator for each group. Five-fold participant cross-fitting supplies
+OOF performance for all source-population participants; final target and
+matched-White heads are saved for spatial analysis. `Other` and `Multiple
+groups` remain descriptive because they are not single specific categories.
+
+Run `02_age_model_anatomic_explainability.ipynb` after that section completes.
+It consumes the expanded ledger and writes to
+`07_all_available_matched_anatomic_explainability`. For every comparison record
+it explains only the global, corresponding target, and corresponding
+matched-White heads. It reports paired head-map differences on identical target
+images and separate target-population versus matched-White-population anatomy
+tests. Exact RETFound patch contributions are intersected with FR-U-Net vessel
+masks and localized optic-disc, peripapillary, and foveal ROIs. Four-record
+batch Parquets make the run restart-safe.
+
+Because all-available target heads have unequal training sample sizes, this
+power-enhanced analysis should be reported alongside the equal-N sensitivity
+analysis when available; the two analyses answer different questions.
