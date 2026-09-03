@@ -88,6 +88,33 @@ def test_demographic_and_age_range_analyses_are_present():
     assert "chronological_model_5y_age_bin_performance.csv" in source
 
 
+def test_demographic_formula_inputs_are_statsmodels_safe():
+    _, source = _source()
+    assert "formula_categoricals" in source
+    assert "pd.Categorical(" in source
+    assert '"error_message": str(error)[:500]' in source
+    assert "Adjusted demographic models failed" in source
+    assert "demographic_model_failures.csv" in source
+
+
+def test_publication_figure_layout_is_not_clipped():
+    _, source = _source()
+    assert 'context="notebook"' in source
+    assert 'layout="constrained"' in source
+    assert "pad_inches=0.25" in source
+    assert 'xlabel="Mean absolute age difference (years; 95% CI)"' in source
+    assert "figure_5b_three_age_pairwise_projections.png" in source
+    assert "set_box_aspect" in source
+
+
+def test_age_tail_findings_are_calibration_guarded():
+    _, source = _source()
+    assert "retinal_model_mean_error" in source
+    assert "tail_calibration_warning" in source
+    assert "publication_support_flag" in source
+    assert "calibration_sensitive_tail_findings" in source
+
+
 def test_standard_and_three_dimensional_figures_are_saved():
     _, source = _source()
     for filename in (
