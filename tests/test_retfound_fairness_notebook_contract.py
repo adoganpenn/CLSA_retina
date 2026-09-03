@@ -109,3 +109,17 @@ def test_all_available_heads_are_cross_fitted_by_participant_and_power_audited()
     assert "mde_80_percent_power_years" in source
     assert "target_minus_white_calibration_slope" in source
     assert "slope_mde_80_percent_power" in source
+
+
+def test_secondary_demographic_figure_uses_dictionary_labels():
+    _, source = _source()
+    assert "dictionary-labeled secondary demographic fairness panels" in source
+    assert '"F": "Female", "2": "Female"' in source
+    assert '"M": "Male", "1": "Male"' in source
+    assert "Less than secondary school graduation" in source
+    assert "Secondary graduation or some post-secondary" in source
+    assert "Post-secondary degree/diploma" in source
+    assert "Less than $20,000" in source
+    assert "$150,000 or more" in source
+    assert "secondary_demographic_age_performance_labeled.parquet" in source
+    assert "np.maximum(point - np.minimum(ci_low, point), 0.0)" in source
