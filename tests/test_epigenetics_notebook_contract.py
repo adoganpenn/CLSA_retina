@@ -126,7 +126,8 @@ def test_standard_and_three_dimensional_figures_are_saved():
         "figure_7_patient_three_clock_phenotypes.png",
         "figure_8_clock_comorbidity_association_forest.png",
         "figure_9_comorbidity_incremental_auc.png",
-        "figure_10_longitudinal_retinal_aging.png",
+        "figure_10_questionnaire_phenome_scan.png",
+        "figure_11_longitudinal_retinal_aging.png",
     ):
         assert filename in source
 
@@ -177,3 +178,34 @@ def test_longitudinal_analysis_controls_baseline_retinal_acceleration():
     assert "baseline_epigenetic_to_followup_retinal_associations.csv" in source
     assert "reliability_capability.json" in source
     assert "eye_level_reliability_available" in source
+
+
+def test_questionnaire_scan_streams_every_raw_baseline_field_with_checkpoints():
+    _, source = _source()
+    assert "questionnaire_all_baseline_fields" in source
+    assert "questionnaire_row_chunk_size" in source
+    assert "for column in baseline_header" in source
+    assert "raw_questionnaire_chunks = pd.read_csv(" in source
+    assert "rows_{start_row:09d}_{stop_row:09d}.parquet" in source
+    assert "all_baseline_questionnaire_answers_private.parquet" in source
+    assert "questionnaire_batch_manifest.csv" in source
+    assert "questionnaire_variable_audit.csv" in source
+
+
+def test_questionnaire_scan_models_numeric_and_categorical_answers():
+    _, source = _source()
+    assert "questionnaire_aging_outcomes" in source
+    assert "question_value_numeric" in source
+    assert "C(question_value_categorical)" in source
+    assert "compare_f_test(base_fit)" in source
+    assert "fdr_q_global" in source
+    assert "fdr_q_within_outcome" in source
+    assert "questionnaire_phenome_scan_tests.csv" in source
+    assert "questionnaire_categorical_level_coefficients.csv" in source
+    assert "questionnaire_phenome_scan_failures.csv" in source
+    assert "figure_10_questionnaire_phenome_scan.png" in source
+
+
+def test_patient_clock_heatmap_is_forced_to_numeric():
+    _, source = _source()
+    assert "heatmap_data.to_numpy(dtype=float)" in source
