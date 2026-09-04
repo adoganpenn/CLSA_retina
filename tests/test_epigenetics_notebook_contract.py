@@ -123,5 +123,57 @@ def test_standard_and_three_dimensional_figures_are_saved():
         "figure_3_epigenetic_vs_chronological_age.png",
         "figure_5_three_age_3d.png",
         "figure_6_three_age_absolute_distances.png",
+        "figure_7_patient_three_clock_phenotypes.png",
+        "figure_8_clock_comorbidity_association_forest.png",
+        "figure_9_comorbidity_incremental_auc.png",
+        "figure_10_longitudinal_retinal_aging.png",
     ):
         assert filename in source
+
+
+def test_patient_level_clock_phenotypes_are_cross_fitted():
+    _, source = _source()
+    assert "cross_fitted_spline_residual" in source
+    assert "SplineTransformer" in source
+    assert "z_retinal_acceleration" in source
+    assert "z_epigenetic_mean_acceleration" in source
+    assert "shared_acceleration_mean" in source
+    assert "retina_specific_discordance" in source
+    assert "three_clock_dispersion" in source
+    assert "three_clock_pca_loadings.csv" in source
+    assert "patient_three_clock_phenotypes_private.parquet" in source
+    assert "extreme_discordance_explainability_cohort_private.parquet" in source
+
+
+def test_comorbidity_models_are_mutually_adjusted_and_multiplicity_corrected():
+    _, source = _source()
+    assert "available_binary_comorbidities" in source
+    assert "mutually_adjusted_clocks" in source
+    assert "orthogonal_three_clock_components" in source
+    assert "direct_clock_discordance" in source
+    assert "z_three_clock_dispersion" in source
+    assert "fit.t_test(" in source
+    assert "- z_epigenetic_mean_acceleration = 0" in source
+    assert "patient_clock_comorbidity_associations.csv" in source
+    assert "multimorbidity_clock_associations.csv" in source
+    assert "benjamini_hochberg" in source
+
+
+def test_incremental_prediction_is_out_of_fold():
+    _, source = _source()
+    assert "StratifiedKFold" in source
+    assert "cross_val_predict" in source
+    assert 'method="predict_proba"' in source
+    assert "delta_auc_vs_base" in source
+    assert "brier_improvement_vs_base" in source
+    assert "comorbidity_oof_predictions_private.parquet" in source
+
+
+def test_longitudinal_analysis_controls_baseline_retinal_acceleration():
+    _, source = _source()
+    assert "retinal_acceleration_bl" in source
+    assert "retinal_acceleration_f1" in source
+    assert "followup_years" in source
+    assert "baseline_epigenetic_to_followup_retinal_associations.csv" in source
+    assert "reliability_capability.json" in source
+    assert "eye_level_reliability_available" in source
