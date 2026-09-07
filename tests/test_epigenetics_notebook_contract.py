@@ -127,7 +127,8 @@ def test_standard_and_three_dimensional_figures_are_saved():
         "figure_8_clock_comorbidity_association_forest.png",
         "figure_9_comorbidity_incremental_auc.png",
         "figure_10_questionnaire_phenome_scan.png",
-        "figure_11_longitudinal_retinal_aging.png",
+        "figure_11_cataract_quality_sensitivity.png",
+        "figure_12_longitudinal_retinal_aging.png",
     ):
         assert filename in source
 
@@ -202,10 +203,46 @@ def test_questionnaire_scan_models_numeric_and_categorical_answers():
     assert "fdr_q_within_outcome" in source
     assert "questionnaire_phenome_scan_tests.csv" in source
     assert "questionnaire_categorical_level_coefficients.csv" in source
+    assert "questionnaire_categorical_level_counts.csv" in source
     assert "questionnaire_phenome_scan_failures.csv" in source
+    assert "questionnaire_phenome_scan_manuscript_candidates.csv" in source
     assert "figure_10_questionnaire_phenome_scan.png" in source
 
 
 def test_patient_clock_heatmap_is_forced_to_numeric():
     _, source = _source()
     assert "heatmap_data.to_numpy(dtype=float)" in source
+
+
+def test_procedural_artifacts_and_small_samples_are_not_manuscript_hits():
+    _, source = _source()
+    assert "procedural_or_recording_metadata" in source
+    assert "^VA_DONE_" in source
+    assert "COG_REY.*_META_AUDIO_STATUS" in source
+    assert "minimum_questionnaire_manuscript_n = 300" in source
+    assert "minimum_questionnaire_level_n = 30" in source
+    assert "small_sample_warning" in source
+    assert "manuscript_eligible" in source
+    assert "CCC_CANTP_LK_COM" in source
+
+
+def test_cataract_is_one_construct_and_targeted_hits_get_sensitivity_checks():
+    _, source = _source()
+    assert "cataract_construct_pattern" in source
+    assert "cataract_any" in source
+    assert "cataract_construct_source_audit.csv" in source
+    assert "primary_retinal_cataract_adjusted" in source
+    assert "acuity_grip_cataract_quality_sensitivity.csv" in source
+    assert "acuity_grip_robustness_summary.csv" in source
+    assert "robust_across_all_checks" in source
+    assert "not_tested_conditioned_on_same_cataract_construct" in source
+
+
+def test_strict_quality_sensitivity_rebuilds_embeddings_and_age_head():
+    _, source = _source()
+    assert "strict_quality_retained_fraction = 0.75" in source
+    assert "strict_quality_score" in source
+    assert "strict_quality_participant_visit_embeddings.parquet" in source
+    assert "retfound_chronological_age_strict_quality_v1" in source
+    assert "z_retinal_acceleration_strict_quality" in source
+    assert "figure_11_cataract_quality_sensitivity.png" in source
