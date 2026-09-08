@@ -280,6 +280,10 @@ def test_full_retinal_questionnaire_scan_is_batched_and_construct_corrected():
     assert "discovery_construct_p" in source
     assert "validation_bonferroni_threshold" in source
     assert "full_retinal_questionnaire_variable_tests.csv" in source
+    assert 'full_scan_model_version = "v2_collinearity_safe"' in source
+    assert "retinal_scan_bmi_column = next(" in source
+    assert "full_scan_result_columns" in source
+    assert "full_retinal_questionnaire_empty_scan_diagnostic.csv" in source
 
 
 def test_quality_curve_eye_reliability_and_manual_review_are_present():
