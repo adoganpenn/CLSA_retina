@@ -229,6 +229,7 @@ def test_procedural_artifacts_and_small_samples_are_not_manuscript_hits():
 def test_cataract_is_one_construct_and_targeted_hits_get_sensitivity_checks():
     _, source = _source()
     assert "cataract_construct_pattern" in source
+    assert "cataract_status_pattern" in source
     assert "cataract_any" in source
     assert "cataract_construct_source_audit.csv" in source
     assert "primary_retinal_cataract_adjusted" in source
@@ -236,6 +237,17 @@ def test_cataract_is_one_construct_and_targeted_hits_get_sensitivity_checks():
     assert "acuity_grip_robustness_summary.csv" in source
     assert "robust_across_all_checks" in source
     assert "not_tested_conditioned_on_same_cataract_construct" in source
+    assert "visual_acuity_score_pattern" in source
+    assert "grip_strength_pattern" in source
+    assert "^GS_(?:EXAM_(?:MAX|AVG)|TRIAL[123]_MAX)_COM$" in source
+    assert "TRA_CHGSLC_MCQ" not in source
+
+
+def test_questionnaire_models_reject_rank_deficient_designs():
+    _, source = _source()
+    assert "np.linalg.matrix_rank(base_model.exog)" in source
+    assert "np.linalg.matrix_rank(full_model.exog)" in source
+    assert "skipped_rank_deficient_design" in source
 
 
 def test_strict_quality_sensitivity_rebuilds_embeddings_and_age_head():
@@ -246,3 +258,69 @@ def test_strict_quality_sensitivity_rebuilds_embeddings_and_age_head():
     assert "retfound_chronological_age_strict_quality_v1" in source
     assert "z_retinal_acceleration_strict_quality" in source
     assert "figure_11_cataract_quality_sensitivity.png" in source
+
+
+def test_locked_internal_validation_is_participant_separated():
+    _, source = _source()
+    assert "locked_validation_fraction = 0.30" in source
+    assert "deterministic_fraction" in source
+    assert "retfound_chronological_age_discovery_only" in source
+    assert "frozen_calibrator.fit(calibration_x, calibration_y)" in source
+    assert "locked_discovery_validation_metrics.csv" in source
+    assert "locked_construct_confirmation.csv" in source
+    assert "confirmed_locked_validation" in source
+
+
+def test_full_retinal_questionnaire_scan_is_batched_and_construct_corrected():
+    _, source = _source()
+    assert "questionnaire_full_retinal_fields" in source
+    assert "full_questionnaire_column_batch_size = 50" in source
+    assert "full_questionnaire_column_scans" in source
+    assert "simes_p_value" in source
+    assert "discovery_construct_p" in source
+    assert "validation_bonferroni_threshold" in source
+    assert "full_retinal_questionnaire_variable_tests.csv" in source
+
+
+def test_quality_curve_eye_reliability_and_manual_review_are_present():
+    _, source = _source()
+    assert "quality_threshold_retained_fractions = (0.50, 0.60, 0.70, 0.80, 0.90)" in source
+    assert "quality_threshold_performance_curve.csv" in source
+    assert "continuous_quality_adjustment.csv" in source
+    assert "manual_quality_review_form_BLINDED.csv" in source
+    assert "image_level_retinal_predictions" in source
+    assert "inter_eye_reliability.csv" in source
+    assert "eye_specific_etdrs_associations.csv" in source
+
+
+def test_publication_sensitivity_package_is_complete():
+    _, source = _source()
+    for output in (
+        "table_1_methylation_included_vs_excluded.csv",
+        "full_vs_methylation_coefficient_transport.csv",
+        "nonlinear_construct_checks.csv",
+        "incremental_r2_bootstrap_intervals.csv",
+        "procedural_negative_control_audit.csv",
+        "power_minimum_detectable_effects.csv",
+        "locked_demographic_performance.csv",
+        "partial_clock_acceleration_correlations.csv",
+        "measurement_error_correction_sensitivity.csv",
+        "selection_ipw_clock_association.csv",
+        "prospective_comorbidity_associations.csv",
+        "publication_table_index.json",
+    ):
+        assert output in source
+
+
+def test_publication_figures_are_saved():
+    _, source = _source()
+    for filename in (
+        "figure_13_locked_internal_validation.png",
+        "figure_14_quality_threshold_curve.png",
+        "figure_15_eye_specific_analysis.png",
+        "figure_16_selection_transportability.png",
+        "figure_17_analytic_cohort_flow.png",
+        "figure_18_demographic_calibration.png",
+        "figure_19_construct_confirmation.png",
+    ):
+        assert filename in source
