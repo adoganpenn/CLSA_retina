@@ -15,6 +15,7 @@ import random
 import re
 import shutil
 import subprocess
+import tempfile
 import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -2607,7 +2608,8 @@ def _normalize_figure_id(figure_id: str) -> str:
     return f"{int(value):02d}"
 
 
-def _save(fig: Figure, path: Path, profile: Profile, bbox=None) -> None:
+def _encode_local_file(fig: Figure, path: Path, profile: Profile, bbox=None) -> None:
+    """Encode on a seekable local filesystem, never directly on /Volumes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     common = {
         "dpi": profile.dpi,
@@ -2634,6 +2636,45 @@ def _save(fig: Figure, path: Path, profile: Profile, bbox=None) -> None:
         raise AssertionError(
             f"Missing glyph while saving {path}: " + "; ".join(missing[:6])
         )
+
+
+def _save(fig: Figure, path: Path, profile: Profile, bbox=None) -> None:
+    """Encode locally, then publish with sequential writes supported by UC Volumes.
+
+    LZW TIFF encoding updates/seeks within its header. Unity Catalog's mounted
+    filesystem need not support those operations. Keep the original filename
+    during local encoding so PDF/PNG metadata and deterministic bytes stay the
+    same. Existing outputs are touched only after successful local encoding.
+    """
+    path = Path(path)
+    preferred = Path("/local_disk0/tmp")
+    local_root = (
+        preferred if preferred.is_dir() and os.access(preferred, os.W_OK) else None
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="clsa-figure-export-", dir=local_root
+    ) as staging:
+        local_path = Path(staging) / path.name
+        _encode_local_file(fig, local_path, profile, bbox)
+        if path.suffix.lower() in {".tif", ".tiff"}:
+            from PIL import Image
+
+            with Image.open(local_path) as encoded:
+                encoded.load()
+                if encoded.tag_v2.get(259) != 5:
+                    raise AssertionError(f"TIFF is not LZW compressed: {path}")
+                dpi = encoded.info.get("dpi", ())
+                if len(dpi) != 2 or any(
+                    abs(float(value) - profile.dpi) > 0.1 for value in dpi
+                ):
+                    raise AssertionError(
+                        f"TIFF DPI does not match {profile.dpi}: {path}"
+                    )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with local_path.open("rb") as source, path.open("wb") as destination:
+            shutil.copyfileobj(source, destination, length=8 * 1024 * 1024)
+        if path.stat().st_size != local_path.stat().st_size:
+            raise OSError(f"Published figure size mismatch: {path}")
 
 
 def _pdf_text_check(path: Path, axis_labels: Sequence[str]) -> None:

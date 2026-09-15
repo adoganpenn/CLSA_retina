@@ -72,9 +72,18 @@ volume_root = "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset"
 derived_root = f"{volume_root}/derived/clsa_retinal_aging"
 
 sap_path = f"{derived_root}/sap_questionnaire_visit"
-embedding_path = (
-    f"{derived_root}/fundus_retfound/02_embeddings/retfound_embeddings_delta"
+embedding_root = Path(f"{derived_root}/fundus_retfound/02_embeddings")
+participant_embedding_path = Path(
+    f"{derived_root}/Age_Glaucoma/16_algorithm_fairness/01_private/"
+    "participant_visit_embeddings.parquet"
 )
+# Optional exact input override. Leave blank to discover completed upstream
+# artifacts. For a Parquet directory override, set the format explicitly.
+embedding_path_requested = ""
+embedding_format_requested = "auto"  # auto, delta, or parquet
+baseline_archive_path = Path(f"{volume_root}/2209017_UOttawa_EFreeman_BL.zip")
+baseline_member_suffix = "CoPv7_Qx_CANUE_PA_BS.csv"
+baseline_chunk_size = 10000
 retinal_age_prediction_path_requested = ""
 mortality_archive_path = (
     f"{volume_root}/2209017_UOttawa_EFreeman_Mortality_DRU_Aug2025.zip"
@@ -104,6 +113,18 @@ epigenetic_measures = {
     "epigenetic_eeaa": "Extrinsic epigenetic age acceleration",
     "epigenetic_dnam_age": "Horvath DNAm age",
     "epigenetic_hannum_age": "Hannum DNAm age",
+}
+EPIGENETIC_SOURCE_VARIABLES = {
+    "DNAmAge_COM": "epigenetic_dnam_age",
+    "AgeAccelerationDifference_COM": "epigenetic_age_acceleration_difference",
+    "AgeAccelerationResidual_COM": "epigenetic_age_acceleration_residual",
+    "IEAA_COM": "epigenetic_ieaa",
+    "EEAA_COM": "epigenetic_eeaa",
+    "Hannum_Age_COM": "epigenetic_hannum_age",
+}
+numeric_missing_codes = {
+    "", "-8", "-77771", "-77772", "-88880", "-88888",
+    "-99991", "-99993", "-99999",
 }
 
 if expected_embedding_dim != 1024:
@@ -169,6 +190,129 @@ def require_columns(frame, columns: list[str], label: str) -> None:
     missing = sorted(set(columns) - available)
     if missing:
         raise ValueError(f"{label} is missing required columns: {missing}")
+
+
+def resolve_embedding_inputs(requested: str, requested_format: str):
+    """Find persisted vectors; never regenerate or mix image and rollup units."""
+    if requested_format not in {"auto", "delta", "parquet"}:
+        raise ValueError("embedding_format_requested must be auto, delta, or parquet")
+    if requested:
+        if not databricks_path_exists(requested):
+            raise FileNotFoundError(f"Explicit RETFound input not found: {requested}")
+        resolved_format = requested_format
+        if resolved_format == "auto":
+            if databricks_path_exists(f"{requested.rstrip('/')}/_delta_log"):
+                resolved_format = "delta"
+            elif Path(requested).suffix == ".parquet":
+                resolved_format = "parquet"
+            else:
+                raise ValueError(
+                    "Cannot infer explicit embedding input format; set "
+                    "embedding_format_requested to delta or parquet."
+                )
+        # The schema identifies rollups at load time, including explicit inputs.
+        return [requested], resolved_format, "schema_detected"
+
+    # Reuse the completed, reconciled input already used by epigenetics.ipynb.
+    if databricks_path_exists(str(participant_embedding_path)):
+        return [str(participant_embedding_path)], "parquet", "participant_visit"
+    delta_path = str(embedding_root / "retfound_embeddings_delta")
+    if databricks_path_exists(f"{delta_path}/_delta_log"):
+        return [delta_path], "delta", "image"
+
+    image_batches = sorted(
+        (embedding_root / "batches").glob("batch_*/retfound_embeddings.parquet")
+    )
+    consolidated = embedding_root / "retfound_embeddings.parquet"
+    if not image_batches and databricks_path_exists(str(consolidated)):
+        image_batches = [consolidated]
+    fairness_batches_root = Path(
+        f"{derived_root}/Age_Glaucoma/16_algorithm_fairness/"
+        "00_full_image_pipeline/02_embedding_batches"
+    )
+    image_batches.extend(
+        sorted(fairness_batches_root.glob("batch_*/retfound_embeddings.parquet"))
+    )
+    if image_batches:
+        return sorted({str(path) for path in image_batches}), "parquet", "image"
+    raise FileNotFoundError(
+        "No completed RETFound embeddings found. Checked:\n- "
+        + "\n- ".join(
+            [
+                delta_path,
+                str(participant_embedding_path),
+                str(consolidated),
+                str(embedding_root / "batches/batch_*/retfound_embeddings.parquet"),
+                str(fairness_batches_root / "batch_*/retfound_embeddings.parquet"),
+            ]
+        )
+        + "\nSet embedding_path_requested to an existing input, or finish the "
+        "embedding persistence/rollup cells in notebook 02 or 01_retfound_age_fairness."
+    )
+
+
+def load_baseline_epigenetic_phenotypes(archive_path, member_suffix, eligible_ids, chunksize):
+    """Reuse the released-column loader from epigenetics.ipynb, not SAP fields.
+
+    The older epigenetics checkpoint is imaging-restricted. Read the same raw
+    release instead so this separate mortality cohort includes all eligible
+    baseline SAP participants, whether or not they have retinal embeddings.
+    No clock or acceleration values are calculated or substituted here.
+    """
+    archive_path = Path(archive_path)
+    if not archive_path.is_file():
+        raise FileNotFoundError(f"Baseline CLSA release not found: {archive_path}")
+    eligible_ids = set(pd.Series(list(eligible_ids), dtype="string").str.strip().dropna())
+    with zipfile.ZipFile(archive_path) as archive:
+        matches = [name for name in archive.namelist() if name.endswith(member_suffix)]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one member ending {member_suffix!r}; found {len(matches)}")
+        member = matches[0]
+        with archive.open(member) as stream:
+            header = pd.read_csv(stream, nrows=0).columns.tolist()
+        id_column = next((column for column in (
+            "entity_id", "participant_id", "ID", "id", "Entity_ID", "ENTITY_ID"
+        ) if column in header), None)
+        if id_column is None:
+            raise ValueError("Unable to identify baseline participant ID column")
+        missing = {id_column, *EPIGENETIC_SOURCE_VARIABLES} - set(header)
+        if missing:
+            raise ValueError(f"Baseline CSV is missing released epigenetic columns: {sorted(missing)}")
+        retained_chunks = []
+        scanned_rows = 0
+        with archive.open(member) as stream:
+            for chunk in pd.read_csv(
+                stream, usecols=[id_column, *EPIGENETIC_SOURCE_VARIABLES],
+                dtype="string", chunksize=chunksize, low_memory=False,
+            ):
+                scanned_rows += len(chunk)
+                chunk[id_column] = chunk[id_column].astype("string").str.strip()
+                retained = chunk.loc[chunk[id_column].isin(eligible_ids)].copy()
+                if not retained.empty:
+                    retained_chunks.append(retained)
+    raw = (pd.concat(retained_chunks, ignore_index=True) if retained_chunks
+           else pd.DataFrame(columns=[id_column, *EPIGENETIC_SOURCE_VARIABLES]))
+    raw = raw.rename(columns={id_column: "participant_id"})
+    raw["participant_id"] = raw["participant_id"].astype("string").str.strip()
+    if raw["participant_id"].duplicated().any():
+        raise ValueError("Baseline epigenetic source is not unique by participant")
+    epigenetic = raw[["participant_id"]].copy()
+    for source_column, analysis_column in EPIGENETIC_SOURCE_VARIABLES.items():
+        values = raw[source_column].astype("string").str.strip()
+        values = values.mask(values.isin(numeric_missing_codes))
+        epigenetic[analysis_column] = pd.to_numeric(values, errors="coerce")
+    epigenetic["any_epigenetic_measure"] = epigenetic[
+        list(EPIGENETIC_SOURCE_VARIABLES.values())
+    ].notna().any(axis=1)
+    epigenetic = epigenetic.loc[epigenetic["any_epigenetic_measure"]].reset_index(drop=True)
+    metadata = {
+        "archive": str(archive_path), "baseline_member": member,
+        "source_variables": dict(EPIGENETIC_SOURCE_VARIABLES),
+        "scanned_rows": scanned_rows, "eligible_baseline_sap_participants": len(eligible_ids),
+        "participants_any_released_measure": len(epigenetic),
+        "imaging_restricted_checkpoint_used": False,
+    }
+    return epigenetic, metadata
 
 
 def display_pandas(frame: pd.DataFrame, label: str) -> None:
@@ -255,8 +399,7 @@ def normalize_death(series: pd.Series) -> pd.Series:
     if unknown.any():
         counts = values.loc[unknown].value_counts().head(20).to_dict()
         raise ValueError(
-            "Unrecognized death encoding. Review the mortality dictionary: "
-            f"{counts}"
+            f"Unrecognized death encoding. Review the mortality dictionary: {counts}"
         )
     result = pd.Series(pd.NA, index=series.index, dtype="Int64")
     result.loc[yes] = 1
@@ -286,8 +429,13 @@ def resolve_prediction_path(requested: str) -> tuple[str, str]:
         if not databricks_path_exists(requested):
             raise FileNotFoundError(requested)
         return requested, "explicit locked prediction file"
-    age_root = str(Path(embedding_path).parent.parent / "03_age_model")
+    age_root = str(embedding_root.parent / "03_age_model")
     candidates = (
+        (
+            f"{derived_root}/Age_Glaucoma/16_algorithm_fairness/03_age_model/"
+            "CLSA_full_cohort_age_predictions_oof.parquet",
+            "CLSA participant-grouped out-of-fold retinal-age prediction from 01_retfound_age_fairness",
+        ),
         (
             f"{age_root}/retfound_age_predictions_oof.parquet",
             "CLSA out-of-fold retinal-age prediction",
@@ -480,8 +628,13 @@ def attach_survival_outcome(
 # COMMAND ----------
 if not databricks_path_exists(sap_path):
     raise FileNotFoundError(f"SAP participant-visit table not found: {sap_path}")
-if not databricks_path_exists(embedding_path):
-    raise FileNotFoundError(f"RETFound embeddings not found: {embedding_path}")
+embedding_paths, embedding_format, embedding_unit = resolve_embedding_inputs(
+    embedding_path_requested, embedding_format_requested
+)
+embedding_path = embedding_paths[0]  # retained for legacy metadata consumers
+print("RETFound input format:", embedding_format)
+print("RETFound input unit:", embedding_unit)
+print("RETFound input paths:\n- " + "\n- ".join(embedding_paths))
 
 sap_spark = spark.read.format("delta").load(sap_path)
 require_columns(
@@ -490,23 +643,11 @@ require_columns(
     "SAP participant-visit table",
 )
 
-available_epigenetic = [
-    column for column in epigenetic_measures if column in sap_spark.columns
-]
-missing_epigenetic = sorted(set(epigenetic_measures) - set(available_epigenetic))
-if missing_epigenetic:
-    warnings.warn(f"Unavailable epigenetic measures will be skipped: {missing_epigenetic}")
-if primary_epigenetic_measure not in available_epigenetic:
-    raise ValueError(
-        f"Primary epigenetic measure missing: {primary_epigenetic_measure}"
-    )
-
 sap_columns = [
     "participant_id",
     "visit",
     "age_at_fundus_years",
     "sex_at_birth",
-    *available_epigenetic,
 ]
 for optional in (
     "fundus_visit_timestamp_proxy",
@@ -529,19 +670,33 @@ sap_bl = (
     .dropDuplicates(["participant_id"])
     .toPandas()
 )
-sap_bl["participant_id"] = sap_bl["participant_id"].astype("string")
+sap_bl["participant_id"] = sap_bl["participant_id"].astype("string").str.strip()
 sap_bl["age_at_fundus_years"] = pd.to_numeric(
     sap_bl["age_at_fundus_years"], errors="coerce"
 )
 sap_bl["sex_female"] = normalize_sex(sap_bl["sex_at_birth"])
-for column in available_epigenetic:
-    sap_bl[column] = pd.to_numeric(sap_bl[column], errors="coerce")
+released_epigenetic, epigenetic_source_metadata = load_baseline_epigenetic_phenotypes(
+    baseline_archive_path, baseline_member_suffix,
+    sap_bl["participant_id"], baseline_chunk_size,
+)
+sap_bl = sap_bl.merge(
+    released_epigenetic, on="participant_id", how="left", validate="one_to_one"
+)
+available_epigenetic = list(epigenetic_measures)
+epigenetic_source_coverage = pd.DataFrame([
+    {"measure": column, "released_variable": source,
+     "participants": int(sap_bl[column].notna().sum())}
+    for source, column in EPIGENETIC_SOURCE_VARIABLES.items()
+])
+print("Epigenetic source:", epigenetic_source_metadata["archive"])
+print("Epigenetic CSV member:", epigenetic_source_metadata["baseline_member"])
+display_pandas(epigenetic_source_coverage, "Released epigenetic coverage before mortality exclusions")
+if not sap_bl[primary_epigenetic_measure].notna().any():
+    raise ValueError("Released AgeAccelerationResidual_COM has no measured values after baseline ID linkage")
 
 # Prefer the visit-timing proxy retained by notebook 03, then baseline date.
 if "fundus_visit_timestamp_proxy" in sap_bl.columns:
-    sap_bl["retinal_index_date"] = parse_date(
-        sap_bl["fundus_visit_timestamp_proxy"]
-    )
+    sap_bl["retinal_index_date"] = parse_date(sap_bl["fundus_visit_timestamp_proxy"])
 else:
     sap_bl["retinal_index_date"] = pd.NaT
 sap_bl = sap_bl.merge(
@@ -555,7 +710,20 @@ sap_bl["retinal_index_date"] = sap_bl["retinal_index_date"].fillna(
 sap_bl["epigenetic_index_date"] = sap_bl["baseline_date"]
 
 # Aggregate both eyes/images to one vector per participant before modelling.
-embeddings_spark = spark.read.format("delta").load(embedding_path)
+embeddings_spark = (
+    spark.read.format("delta").load(embedding_paths[0])
+    if embedding_format == "delta"
+    else spark.read.parquet(*embedding_paths)
+)
+is_rollup = embedding_unit == "participant_visit" or (
+    embedding_unit == "schema_detected"
+    and "n_embedded_images" in embeddings_spark.columns
+    and "image_path" not in embeddings_spark.columns
+)
+embedding_unit = "participant_visit" if is_rollup else "image"
+if "embedding_dim" not in embeddings_spark.columns:
+    require_columns(embeddings_spark, ["embedding"], "RETFound embedding table")
+    embeddings_spark = embeddings_spark.withColumn("embedding_dim", F.size("embedding"))
 require_columns(
     embeddings_spark,
     ["participant_id", "visit", "embedding", "embedding_dim"],
@@ -566,27 +734,65 @@ embedding_sum_expression = (
     f"array_repeat(CAST(0.0 AS FLOAT), {expected_embedding_dim}), "
     "(acc, x) -> zip_with(acc, x, (a, b) -> CAST(a + b AS FLOAT)))"
 )
-retinal_vectors = (
-    embeddings_spark.filter(
-        (F.upper(F.col("visit")) == "BL")
-        & F.col("embedding").isNotNull()
-        & (F.col("embedding_dim") == expected_embedding_dim)
-        & (F.size("embedding") == expected_embedding_dim)
-    )
-    .groupBy(F.col("participant_id").cast("string").alias("participant_id"))
-    .agg(
-        F.count("*").alias("n_retinal_images"),
-        F.expr(embedding_sum_expression).alias("embedding_sum"),
-    )
-    .withColumn(
-        "embedding",
-        F.expr(
-            "transform(embedding_sum, x -> CAST(x / n_retinal_images AS FLOAT))"
-        ),
-    )
-    .drop("embedding_sum")
-    .toPandas()
+baseline_embeddings = embeddings_spark.filter(
+    (F.upper(F.col("visit")) == "BL")
+    & F.col("embedding").isNotNull()
+    & (F.col("embedding_dim") == expected_embedding_dim)
+    & (F.size("embedding") == expected_embedding_dim)
 )
+if is_rollup:
+    require_columns(baseline_embeddings, ["n_embedded_images"], "RETFound rollup")
+    if (
+        baseline_embeddings.groupBy("participant_id")
+        .count()
+        .filter(F.col("count") > 1)
+        .limit(1)
+        .count()
+    ):
+        raise ValueError("RETFound rollup is not unique by baseline participant")
+    if (
+        baseline_embeddings.filter(
+            F.col("n_embedded_images").isNull() | (F.col("n_embedded_images") <= 0)
+        )
+        .limit(1)
+        .count()
+    ):
+        raise ValueError("RETFound rollup has invalid image counts")
+    retinal_vectors = baseline_embeddings.select(
+        F.col("participant_id").cast("string").alias("participant_id"),
+        F.col("n_embedded_images").cast("long").alias("n_retinal_images"),
+        F.col("embedding").cast("array<float>").alias("embedding"),
+    ).toPandas()
+else:
+    if len(embedding_paths) > 1:
+        require_columns(baseline_embeddings, ["image_path"], "RETFound image batches")
+        if (
+            baseline_embeddings.groupBy("image_path")
+            .count()
+            .filter(F.col("count") > 1)
+            .limit(1)
+            .count()
+        ):
+            raise ValueError(
+                "RETFound image batches overlap; reconcile duplicate image paths"
+            )
+    retinal_vectors = (
+        baseline_embeddings.groupBy(
+            F.col("participant_id").cast("string").alias("participant_id")
+        )
+        .agg(
+            F.count("*").alias("n_retinal_images"),
+            F.expr(embedding_sum_expression).alias("embedding_sum"),
+        )
+        .withColumn(
+            "embedding",
+            F.expr(
+                "transform(embedding_sum, x -> CAST(x / n_retinal_images AS FLOAT))"
+            ),
+        )
+        .drop("embedding_sum")
+        .toPandas()
+    )
 retinal_vectors["embedding"] = retinal_vectors["embedding"].map(
     lambda value: np.asarray(value, dtype=np.float32)
 )
@@ -620,26 +826,23 @@ if prediction_path:
         raise ValueError("Retinal-age prediction column was not recognized.")
     if "participant_id" not in predictions_spark.columns:
         require_columns(predictions_spark, ["image_path"], "Age predictions")
+        require_columns(embeddings_spark, ["image_path", "participant_id", "visit"],
+                        "Image-level keys required for age predictions")
         embedding_keys = embeddings_spark.select(
             "image_path", "participant_id", "visit"
         ).dropDuplicates(["image_path"])
-        predictions_spark = predictions_spark.join(
-            embedding_keys, "image_path", "left"
-        )
+        predictions_spark = predictions_spark.join(embedding_keys, "image_path", "left")
     retinal_age = (
         predictions_spark.filter(F.upper(F.col("visit")) == "BL")
         .groupBy(F.col("participant_id").cast("string").alias("participant_id"))
-        .agg(
-            F.avg(F.col(prediction_column).cast("double")).alias("retinal_age")
-        )
+        .agg(F.avg(F.col(prediction_column).cast("double")).alias("retinal_age"))
         .toPandas()
     )
     retinal_predictors = retinal_predictors.merge(
         retinal_age, on="participant_id", how="left"
     )
     retinal_predictors["retinal_age_gap"] = (
-        retinal_predictors["retinal_age"]
-        - retinal_predictors["age_at_fundus_years"]
+        retinal_predictors["retinal_age"] - retinal_predictors["age_at_fundus_years"]
     )
 else:
     retinal_predictors["retinal_age_gap"] = np.nan
@@ -650,9 +853,11 @@ retinal_cohort, retinal_flow = attach_survival_outcome(
     "Retinal RETFound",
 )
 
-epigenetic_predictors = sap_bl.loc[
-    sap_bl[available_epigenetic].notna().any(axis=1)
-].drop(columns=["baseline_date"], errors="ignore").copy()
+epigenetic_predictors = (
+    sap_bl.loc[sap_bl[available_epigenetic].notna().any(axis=1)]
+    .drop(columns=["baseline_date"], errors="ignore")
+    .copy()
+)
 epigenetic_cohort, epigenetic_flow = attach_survival_outcome(
     epigenetic_predictors,
     "epigenetic_index_date",
@@ -675,9 +880,7 @@ cohort_summary = pd.DataFrame(
             "cohort": "Epigenetic clocks",
             "participants": len(epigenetic_cohort),
             "deaths": int(epigenetic_cohort["event"].sum()),
-            "median_followup_years": epigenetic_cohort[
-                "followup_years"
-            ].median(),
+            "median_followup_years": epigenetic_cohort["followup_years"].median(),
             "max_followup_years": epigenetic_cohort["followup_years"].max(),
         },
     ]
@@ -1773,7 +1976,11 @@ run_metadata = {
     "status_member": mortality_member_path,
     "censor_date_column": censor_date_column,
     "sap_path": sap_path,
+    "epigenetic_source": epigenetic_source_metadata,
     "embedding_path": embedding_path,
+    "embedding_paths": embedding_paths,
+    "embedding_format": embedding_format,
+    "embedding_input_unit": embedding_unit,
     "retinal_age_prediction_path": prediction_path,
     "retinal_age_prediction_provenance": prediction_provenance,
     "primary_landmark": "baseline",
