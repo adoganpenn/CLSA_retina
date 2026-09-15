@@ -31,6 +31,10 @@ Start with:
   from the baseline phenotype CSV, writes provenance/missingness/formula QC,
   and creates a baseline fundus–epigenetic linkage table without reading raw
   DNA, CpG, BGEN, or BGI files.
+- [`notebooks/04_mortality_prediction_retfound_epigenetic.py`](notebooks/04_mortality_prediction_retfound_epigenetic.py)
+  to evaluate baseline RETFound vectors, retinal-age gap, and each released
+  epigenetic-age measure in separate all-cause mortality analyses using nested
+  participant-level validation, calibration, and reverse-causation checks.
 - [`notebooks/correlation.py`](notebooks/correlation.py) to stratify retinal age
   across the SAP measures and evaluate participant-grouped comorbidity models
   from the 1,024-dimensional RETFound vectors.
