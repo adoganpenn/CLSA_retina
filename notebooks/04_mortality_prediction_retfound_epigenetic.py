@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import json
 import math
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 import warnings
 import zipfile
 
@@ -66,6 +66,8 @@ from sklearn.preprocessing import StandardScaler
 # COMMAND ----------
 # Reproducible configuration. Raw participant data and derived participant-level
 # outputs remain in the approved CLSA volume and must not be committed to Git.
+
+from pathlib import Path
 
 repo_root = "/Workspace/Users/ad0038@pennmedicine.upenn.edu/CLSA/CLSA_retina"
 volume_root = "/Volumes/ophthalmology_analytics/dev_optic/clsa_dataset"

@@ -1,0 +1,11 @@
+# CLSA mortality analysis: high-level summary
+
+Retinal aging contains mortality-related information. In the full retinal cohort (27,875 participants; 2,784 deaths), the original prediction analysis reported small incremental C-index gains of approximately 0.004 for retinal-age gap and RETFound vectors. Those original prediction comparisons also need fold-aware verification before publication. Retinal-age gap was associated with mortality after adjustment for age and sex, although a proportional-hazards diagnostic cautions against interpreting its hazard ratio as constant over follow-up. These are associations, not causal effects.
+
+DNAm aging showed some nominal mortality associations. In the original prediction analysis of the separate DNAm cohort (1,432 participants; 145 deaths), none of the six individual measures had an incremental C-index confidence interval excluding zero. These prediction comparisons likewise need fold-aware verification. This is uncertainty about incremental prediction, not evidence that DNAm has no mortality association.
+
+The combined retinal–Horvath–Hannum model was evaluated in a common subset of 1,361 participants with 137 deaths. Its reported mean within-fold C-index was highest (0.766), compared with age and sex (0.752), retinal age plus age and sex (0.761), and DNAm ages plus age and sex (0.757). Whether these increments are supported by appropriate confidence intervals remains unresolved until the appended within-fold evaluation cell is run on the actual predictions.
+
+Do not use the earlier pooled log-partial-hazard C-index differences to claim that retinal age worsens prediction or that combining modalities is superior. Scores from different trained folds need not have a common scale. The new evaluation excludes all cross-fold pairs and produces paired participant-bootstrap intervals within folds, without refitting any model. Its intervals remain conditional on the fitted models and are pointwise, not multiplicity-adjusted.
+
+Overall: the results support a modest mortality-related retinal-aging signal. The additional predictive value of DNAm and of combining modalities remains exploratory; clinical utility and external validity have not been established. The corrected comparison is needed before making a firm claim about multimodal benefit.
