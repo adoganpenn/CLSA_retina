@@ -235,6 +235,11 @@ CLSA_MISSING_CODES = {
     "DO NOT KNOW",
     "REFUSED",
 }
+# CLSA single-response yes/no questionnaire items use 8 (or 08) for
+# "Don't know/No answer" and 9 (or 09) for "Refused". Keep these codes
+# specific to binary coercion: 8 and 9 can be valid response levels for
+# other, nonbinary questionnaire variables analyzed later in this script.
+CLSA_BINARY_MISSING_CODES = CLSA_MISSING_CODES | {"8", "08", "9", "09"}
 BINARY_CODE_MAP = {
     "1": 1.0,
     "Y": 1.0,
@@ -280,7 +285,7 @@ def coerce_binary_strict(
 ) -> pd.Series:
     """Map documented yes/no encodings while preserving missing responses."""
     codes = normalized_code(series)
-    missing = codes.isna() | codes.isin(CLSA_MISSING_CODES)
+    missing = codes.isna() | codes.isin(CLSA_BINARY_MISSING_CODES)
     unknown = ~(missing | codes.isin(BINARY_CODE_MAP))
     if fail_on_unknown and unknown.any():
         counts = codes[unknown].value_counts().head(20).to_dict()
