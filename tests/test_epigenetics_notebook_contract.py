@@ -137,6 +137,12 @@ def test_patient_level_clock_phenotypes_are_cross_fitted():
     _, source = _source()
     assert "cross_fitted_spline_residual" in source
     assert "SplineTransformer" in source
+    retinal_baseline_block = source[
+        source.index("retinal_baseline =") : source.index(
+            "master = (", source.index("retinal_baseline =")
+        )
+    ]
+    assert '"retinal_age_raw_oof"' in retinal_baseline_block
     assert "z_retinal_acceleration" in source
     assert "z_epigenetic_mean_acceleration" in source
     assert "shared_acceleration_mean" in source

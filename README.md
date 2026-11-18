@@ -38,6 +38,17 @@ Start with:
 - [`notebooks/correlation.py`](notebooks/correlation.py) to stratify retinal age
   across the SAP measures and evaluate participant-grouped comorbidity models
   from the 1,024-dimensional RETFound vectors.
+- [`notebooks/08_three_clock_symmetric_calibration.py`](notebooks/08_three_clock_symmetric_calibration.py)
+  to compare retinal, Horvath, and Hannum age on one complete participant
+  cohort with one shared fold assignment and the same held-out five-knot
+  spline-plus-ridge calibration for all three estimates. It exports raw and
+  calibrated metrics, participant-bootstrap confidence intervals, paired
+  absolute-error comparisons with sign-flip tests, five-year age-bin and
+  available demographic/site performance, a leakage audit, cohort flow,
+  publication figures, and manuscript-ready reporting text. The post-hoc
+  calibration layer is symmetric, but the notebook explicitly preserves the
+  limitation that the retinal predictor was trained in CLSA whereas Horvath
+  and Hannum are externally defined clocks.
 - [`Age_Glaucoma/01_build_age_matched_cohort.ipynb`](Age_Glaucoma/01_build_age_matched_cohort.ipynb)
   to reuse the completed source-specific Zeiss RETFound vectors and construct
   conservative, visit-specific age-matched CLSA ocular controls without
