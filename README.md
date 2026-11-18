@@ -8,6 +8,16 @@ Start with:
 
 - [`README_MASTER.md`](README_MASTER.md) for the complete CLSA data,
   questionnaire, imaging, phenotype, and genetics workflow.
+- [`notebooks/09_run_complete_manuscript_pipeline.py`](notebooks/09_run_complete_manuscript_pipeline.py)
+  as the single Databricks entrypoint for the retinal–DNA methylation aging
+  manuscript. It runs the main epigenetics analysis, symmetric three-clock
+  calibration, and granular pairwise concordance analysis; audits all 34
+  persisted statistics inputs named by the canonical renderer; rebuilds five
+  main and eleven supplemental figures in publication and screen-preview
+  formats; displays every figure inline; writes figure/statistics catalogs and
+  provenance manifests; and creates an internal governed ZIP that excludes
+  private participant tables. Set `run_main_analysis=false` to audit and render
+  from completed persisted outputs without refitting models.
 - [`notebooks/01_build_clsa_dataset.py`](notebooks/01_build_clsa_dataset.py)
   to inventory the exact release ZIPs, audit genetics readiness, generate the
   governed `DATASET_README.md`, and optionally assemble analysis tables.
