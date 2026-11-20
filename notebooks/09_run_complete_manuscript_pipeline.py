@@ -84,7 +84,11 @@ statistics_preview_rows = int(
 )
 build_results_bundle = as_bool(widget("build_results_bundle", "true", "Build results ZIP"))
 stop_on_child_failure = as_bool(
-    widget("stop_on_child_failure", "true", "Stop on child-notebook failure")
+    widget(
+        "stop_on_child_failure",
+        "false",
+        "Stop immediately on child-notebook failure",
+    )
 )
 timeout_seconds = int(widget("timeout_seconds", "0", "Child notebook timeout; 0 = unlimited"))
 bootstrap_repetitions = int(
@@ -145,6 +149,23 @@ print(json.dumps(configuration, indent=2))
 # COMMAND ----------
 
 stage_records: list[pipeline.StageRecord] = []
+stage_log_path = run_root / "pipeline_stage_log.csv"
+
+
+def checkpoint_stage_records() -> None:
+    """Persist progress even when a remote child notebook aborts the run."""
+
+    columns = [
+        "stage",
+        "status",
+        "started_utc",
+        "finished_utc",
+        "elapsed_seconds",
+        "detail",
+    ]
+    pd.DataFrame(
+        [record.__dict__ for record in stage_records], columns=columns
+    ).to_csv(stage_log_path, index=False)
 
 
 def notebook_candidates(relative_path: str) -> list[str]:
@@ -199,6 +220,7 @@ def run_child_notebook(
                         detail=f"notebook={candidate}; result={str(result)[:500]}",
                     )
                 )
+                checkpoint_stage_records()
                 print(f"Completed {stage}: {candidate}")
                 return str(result)
             except Exception as error:
@@ -220,9 +242,17 @@ def run_child_notebook(
                 detail=f"{type(error).__name__}: {error}\n{traceback.format_exc()[-3000:]}",
             )
         )
+        checkpoint_stage_records()
         print(f"FAILED {stage}: {type(error).__name__}: {error}")
         if stop_on_child_failure:
             raise
+        print(
+            "Continuing to the persisted-output audit because "
+            "stop_on_child_failure=false. Databricks often exposes only a wrapper "
+            "Py4JJavaError to the parent notebook. If all required statistics were "
+            "already written, the master runner can safely complete rendering; if "
+            "not, the audit below will name every missing file and its producing cell."
+        )
         return ""
 
 
@@ -242,6 +272,7 @@ else:
             detail="run_main_analysis=false; existing persisted statistics will be audited",
         )
     )
+    checkpoint_stage_records()
 
 if run_symmetric_calibration:
     run_child_notebook(
@@ -289,6 +320,32 @@ print(
 )
 if not missing_statistics.empty:
     print(missing_statistics[["file", "producing_cell"]].to_string(index=False))
+    checkpoint_stage_records()
+    failure_report_path = run_root / "pipeline_failure_diagnostic.md"
+    failed_stages = [record for record in stage_records if record.status == "failed"]
+    failure_lines = [
+        "# Pipeline failure diagnostic",
+        "",
+        "The remote child notebook failed before all canonical statistics inputs were present.",
+        "Open the linked child run in Databricks and copy the traceback from its red failing cell; the parent Py4JJavaError does not contain that traceback.",
+        "",
+        "## Missing persisted outputs",
+        "",
+    ]
+    failure_lines.extend(
+        f"- `{row.file}` (producing cell {row.producing_cell})"
+        for row in missing_statistics.itertuples(index=False)
+    )
+    if failed_stages:
+        failure_lines.extend(["", "## Failed child stages", ""])
+        failure_lines.extend(
+            f"- {record.stage}: {record.detail.splitlines()[0]}"
+            for record in failed_stages
+        )
+    failure_report_path.write_text(
+        "\n".join(failure_lines) + "\n", encoding="utf-8"
+    )
+    print("Failure diagnostic:", failure_report_path)
 pipeline.require_complete_statistics(statistics_audit)
 
 try:
@@ -337,6 +394,7 @@ if render_canonical_figures:
                 detail=f"{type(error).__name__}: {error}\n{traceback.format_exc()[-3000:]}",
             )
         )
+        checkpoint_stage_records()
         raise
 
 figure_manifest_path = figure_root / "figure_manifest.json"
@@ -369,10 +427,8 @@ figure_file_catalog = pipeline.catalog_files(
 )
 figure_file_catalog.to_csv(run_root / "complete_figure_file_catalog.csv", index=False)
 
-run_log_path = run_root / "pipeline_stage_log.csv"
-pd.DataFrame([record.__dict__ for record in stage_records]).to_csv(
-    run_log_path, index=False
-)
+checkpoint_stage_records()
+run_log_path = stage_log_path
 
 report_lines = [
     "# Complete manuscript pipeline run",

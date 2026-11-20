@@ -147,6 +147,9 @@ def test_master_databricks_notebook_is_single_complete_entrypoint():
         "show_figures_inline",
         "show_statistics_previews",
         "Figure statistics and provenance",
+        '"stop_on_child_failure",\n        "false",',
+        "checkpoint_stage_records",
+        "pipeline_failure_diagnostic.md",
         "contact_sheet.pdf",
     ):
         assert required in source
